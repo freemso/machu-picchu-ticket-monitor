@@ -14,10 +14,50 @@ This project does not automate purchases, CAPTCHA solving, browser fingerprint e
 The direct provider mirrors public calls used by the official frontend:
 
 1. `GET /visita/lugar-info?idLugar=llaqta_machupicchu` resolves official route IDs.
-2. `POST /visita/consulta-horarios` checks exact date and route availability.
+2. `POST /visita/consulta-horarios` is the **sole** availability source — it reflects tickets
+   actually available to buy online for a given date and route.
 3. The encrypted `data` field is decrypted using the AES/PBKDF2 parameters shipped in the public frontend bundle.
-4. `POST /comunes/disponibilidad-actual` is used as a public day-board fallback.
-5. Playwright navigates to `/disponibilidad/llaqta_machupicchu` only if direct HTTP fails.
+
+> **Note:** `POST /comunes/disponibilidad-actual` (and the `/disponibilidad/…` page Playwright
+> scrapes) is the **on-site sales board** shown on the screens at the entrance. It does *not*
+> represent online-purchasable inventory, so it is intentionally **not** used — not even as a
+> fallback. A `0` from `consulta-horarios` means the tickets are not (yet) on sale online; the
+> monitor alerts when that goes above `0`.
+
+## Alert Rules
+
+All alerting is driven by a declarative list of rules in **`rules.json`**. To monitor more,
+add an object to that list — no code changes needed. Each rule is one of two types:
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `name` | optional | Label shown in logs / dashboard |
+| `type` | yes | `increase` or `below_threshold` |
+| `date` | yes | Visit date, `YYYY-MM-DD` |
+| `route` | yes | e.g. `2A`, `1C` (or `Circuit 2A`) |
+| `slot` | threshold only | Time slot `HH:MM` (e.g. `08:00`); omit to watch the route total |
+| `threshold` | `below_threshold` only | Alert fires when availability drops below this |
+
+```jsonc
+[
+  // Alert when route 2A becomes available (0 -> >0) or its count increases, on 2026-08-19
+  { "name": "2A available 08-19", "type": "increase", "date": "2026-08-19", "route": "2A" },
+
+  // Alert when the 08:00 slot of route 1C drops below 20 tickets, on 2026-08-19
+  { "name": "1C 08:00 low stock", "type": "below_threshold",
+    "date": "2026-08-19", "route": "1C", "slot": "08:00", "threshold": 20 }
+]
+```
+
+Notes:
+- `increase` alerts fire on a `0 -> >0` change or any increase. `below_threshold` alerts fire
+  once when availability **crosses** below the threshold (not repeatedly while it stays low),
+  and again if it recovers above and drops back below.
+- A transient fetch error for a route is skipped (last value kept), never mis-fired as a change.
+- On Railway you can override the file without a redeploy by setting the `ALERT_RULES` env var
+  to the same JSON array.
+- If `rules.json` is empty/absent, the monitor falls back to generating `increase` rules from
+  `TARGET_DATES` × `TARGET_ROUTES`.
 
 ## Quick Start
 
@@ -212,8 +252,10 @@ For a deployment workflow, add repository secrets matching your `.env` values, t
 If the official site changes:
 
 - Direct API parsing errors are logged with structured fields.
-- The monitor attempts the Playwright fallback in `PROVIDER_MODE=auto`.
-- Failed runs are recorded in SQLite.
-- The process keeps polling with exponential backoff.
+- A failed route is skipped for that run (its last stored value is kept), so a transient
+  error is never misread as a `0 -> >0` change. A run only fails if *every* query fails.
+- Failed runs are recorded in SQLite, and the process keeps polling with exponential backoff.
 
-Set `PROVIDER_MODE=api` to disable browser fallback or `PROVIDER_MODE=playwright` to force browser extraction.
+`PROVIDER_MODE=auto` (default) and `PROVIDER_MODE=api` both use the official online API with no
+automatic browser fallback. `PROVIDER_MODE=playwright` forces the (on-site board) browser
+extractor — see the note under "How It Checks Availability"; it is not online availability.

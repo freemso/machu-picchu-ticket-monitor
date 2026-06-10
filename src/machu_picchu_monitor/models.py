@@ -47,6 +47,43 @@ class AvailabilityChange:
         )
 
 
+@dataclass(frozen=True)
+class AlertRule:
+    """A declarative monitoring rule. Add one to rules.json to monitor more.
+
+    type="increase"        -> alert when a route becomes available (0 -> >0) or its
+                              count increases. Operates on the per-route aggregate.
+    type="below_threshold" -> alert when availability drops below `threshold`. If `slot`
+                              is set (e.g. "08:00:00"), it watches that time slot; otherwise
+                              it watches the per-route aggregate.
+    """
+
+    name: str
+    type: str
+    visit_date: date
+    route: str
+    slot: str | None = None
+    threshold: int | None = None
+
+    @property
+    def key(self) -> tuple[date, str]:
+        return (self.visit_date, self.route)
+
+
+@dataclass(frozen=True)
+class ThresholdAlert:
+    rule_name: str
+    visit_date: date
+    route: str
+    route_name: str
+    slot: str | None
+    available: int
+    capacity: int | None
+    threshold: int
+    previous: int | None
+    seen_at: datetime
+
+
 @dataclass
 class MonitorStatus:
     running: bool = False

@@ -57,3 +57,25 @@ def test_record_availability_alerts_only_on_increase(tmp_path) -> None:
     assert storage.list_current()[0]["availability"] == 2
     assert len(storage.list_history()) == 3
     storage.close()
+
+
+def test_record_slot_tracks_previous_and_history(tmp_path) -> None:
+    storage = SQLiteStorage(tmp_path / "availability.sqlite3")
+    storage.init()
+
+    common = dict(
+        visit_date=date(2026, 8, 19),
+        route="1C",
+        route_name="Ruta 1-C",
+        slot="08:00:00",
+        capacity=30,
+    )
+    assert storage.record_slot(available=16, **common) is None  # first time
+    assert storage.record_slot(available=16, **common) == 16  # unchanged
+    assert storage.record_slot(available=9, **common) == 16  # changed
+
+    current = storage.list_slot_current()
+    assert len(current) == 1
+    assert current[0]["available"] == 9
+    assert current[0]["capacity"] == 30
+    storage.close()

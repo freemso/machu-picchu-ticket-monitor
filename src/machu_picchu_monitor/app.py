@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from .config import Settings, get_settings
+from .config import get_settings
 from .monitor import MonitorService
 from .observability import AVAILABILITY_GAUGE, setup_logging
 from .storage import SQLiteStorage
@@ -31,19 +31,15 @@ def _e(value: Any) -> str:
     return html.escape(str(value))
 
 
-def _targeted_rows(rows: list[dict[str, Any]], settings: Settings) -> list[dict[str, Any]]:
-    target_dates = {item.isoformat() for item in settings.target_date_values}
-    target_routes = set(settings.target_route_values)
-    return [
-        row
-        for row in rows
-        if row["visit_date"] in target_dates and row["route"] in target_routes
-    ]
-
-
 def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -> str:
-    current = _targeted_rows(storage.list_current(), monitor.settings)
-    history = _targeted_rows(storage.list_history(limit=100), monitor.settings)[:25]
+    current = storage.list_current()
+    history = storage.list_history(limit=25)
+    slots = storage.list_slot_current()
+    thresholds = {
+        (rule.visit_date.isoformat(), rule.route, rule.slot): rule.threshold
+        for rule in monitor.rules
+        if rule.type == "below_threshold"
+    }
     latest_seen = storage.latest_seen_at()
 
     current_rows = "\n".join(
@@ -72,6 +68,21 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
         """
         for row in history
     ) or '<tr><td colspan="6" class="empty">No historical changes yet.</td></tr>'
+
+    slot_rows = "\n".join(
+        f"""
+        <tr>
+          <td>{_e(row["visit_date"])}</td>
+          <td><strong>{_e(row["route"])}</strong><span>{_e(row["route_name"])}</span></td>
+          <td>{_e(row["slot"])}</td>
+          <td class="qty">{_e(row["available"])}</td>
+          <td>{_e(row["capacity"])}</td>
+          <td>{_e(thresholds.get((row["visit_date"], row["route"], row["slot"]), "—"))}</td>
+          <td>{_e(row["last_seen_at"])}</td>
+        </tr>
+        """
+        for row in slots
+    ) or '<tr><td colspan="7" class="empty">No watched slots yet.</td></tr>'
 
     status = monitor.status
     status_class = "ok" if status.last_error is None else "bad"
@@ -124,6 +135,29 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
 
     <section class="panel">
       <div class="panel-head">
+        <h2>Watched Slots (low-stock rules)</h2>
+        <span class="muted">Alerts when available drops below threshold</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Route</th>
+              <th>Slot</th>
+              <th>Available</th>
+              <th>Capacity</th>
+              <th>Threshold</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody>{slot_rows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
         <h2>Historical Changes</h2>
         <span class="muted">Last 25 changes</span>
       </div>
@@ -151,12 +185,8 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
     """
 
 
-def render_page(settings: Settings, fragment: str) -> str:
-    targets = ", ".join(
-        f"{item.isoformat()} / {route}"
-        for item in settings.target_date_values
-        for route in settings.target_route_values
-    )
+def render_page(monitor: MonitorService, fragment: str) -> str:
+    targets = " · ".join(rule.name for rule in monitor.rules) or "No rules configured"
     return f"""
     <!doctype html>
     <html lang="en">
@@ -298,7 +328,7 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     storage = SQLiteStorage(settings.sqlite_path)
     storage.init()
-    for row in _targeted_rows(storage.list_current(), settings):
+    for row in storage.list_current():
         AVAILABILITY_GAUGE.labels(
             visit_date=row["visit_date"],
             route=row["route"],
@@ -331,7 +361,7 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request) -> HTMLResponse:
         fragment = render_dashboard_fragment(request.app.state.storage, request.app.state.monitor)
-        return HTMLResponse(render_page(request.app.state.settings, fragment))
+        return HTMLResponse(render_page(request.app.state.monitor, fragment))
 
     @app.get("/partials/dashboard", response_class=HTMLResponse)
     async def dashboard_partial(request: Request) -> HTMLResponse:
@@ -361,24 +391,19 @@ def create_app() -> FastAPI:
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/api/availability")
-    async def availability(request: Request) -> list[dict[str, Any]]:
-        return _targeted_rows(
-            request.app.state.storage.list_current(),
-            request.app.state.settings,
-        )
+    async def availability(request: Request) -> dict[str, Any]:
+        storage: SQLiteStorage = request.app.state.storage
+        return {"routes": storage.list_current(), "slots": storage.list_slot_current()}
 
     @app.get("/api/history")
     async def history(request: Request, limit: int = 100) -> list[dict[str, Any]]:
-        return _targeted_rows(
-            request.app.state.storage.list_history(limit=max(1, min(limit, 500))),
-            request.app.state.settings,
-        )
+        return request.app.state.storage.list_history(limit=max(1, min(limit, 500)))
 
     @app.post("/api/run-once")
     async def run_once(request: Request) -> JSONResponse:
         monitor: MonitorService = request.app.state.monitor
-        changes = await monitor.run_once()
-        return JSONResponse({"ok": True, "changes": changes})
+        alerts = await monitor.run_once()
+        return JSONResponse({"ok": True, "alerts": alerts})
 
     return app
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .models import AlertRule
 from .route_matching import normalize_route_code
 
 
@@ -34,6 +35,11 @@ class Settings(BaseSettings):
     provider_mode: str = "auto"
     run_monitor_in_web: bool = True
     alert_on_first_seen: bool = False
+
+    # Declarative alert rules. Edit rules.json to add a rule (see README), or set
+    # ALERT_RULES to a JSON string to override the file (handy on Railway).
+    alert_rules: str = ""
+    alert_rules_file: Path = Path("rules.json")
 
     app_host: str = "0.0.0.0"
     app_port: int = 8000
@@ -89,6 +95,25 @@ class Settings(BaseSettings):
     @property
     def place_url(self) -> str:
         return f"{self.official_site_base_url}/{self.official_place_slug}"
+
+    def load_alert_rules(self) -> list[AlertRule]:
+        """Load alert rules from rules.json / ALERT_RULES, falling back to deriving
+        'increase' rules from TARGET_DATES x TARGET_ROUTES for backward compatibility."""
+        from .rules import load_rules
+
+        rules = load_rules(inline_json=self.alert_rules, rules_file=self.alert_rules_file)
+        if rules:
+            return rules
+        return [
+            AlertRule(
+                name=f"increase:{route}:{visit_date}",
+                type="increase",
+                visit_date=visit_date,
+                route=route,
+            )
+            for visit_date in self.target_date_values
+            for route in self.target_route_values
+        ]
 
 
 @lru_cache

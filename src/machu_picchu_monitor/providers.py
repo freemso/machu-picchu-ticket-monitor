@@ -195,44 +195,6 @@ class OfficialApiProvider:
         self._route_catalog = catalog
         return catalog
 
-    async def _fetch_day_board(self, visit_date: date) -> dict[str, AvailabilityRecord]:
-        body = await self._signed_body(
-            {
-                "lugar": self.settings.official_place_slug,
-                "fecha": visit_date.isoformat(),
-                "punto": self.settings.official_point_of_sale,
-            }
-        )
-        payload = await self._request_json(
-            "POST",
-            "/comunes/disponibilidad-actual",
-            referer=self.settings.availability_url,
-            json_body=body,
-        )
-        if isinstance(payload, dict) and payload.get("error"):
-            raise ProviderError(f"Day-board endpoint error: {payload}")
-        if not isinstance(payload, list):
-            raise ProviderError(f"Unexpected day-board payload: {payload!r}")
-
-        records: dict[str, AvailabilityRecord] = {}
-        checked_at = utcnow()
-        for row in payload:
-            route_name = str(row.get("ruta") or "")
-            code = route_code_from_text(route_name)
-            if not code:
-                continue
-            quantity = int(row.get("ncupoActual") or row.get("ncupo_actual") or 0)
-            records[code] = AvailabilityRecord(
-                visit_date=visit_date,
-                route=code,
-                route_name=route_name,
-                quantity=quantity,
-                source="official_day_board_api",
-                checked_at=checked_at,
-                raw=row,
-            )
-        return records
-
     async def _fetch_online_route(
         self,
         visit_date: date,
@@ -288,9 +250,15 @@ class OfficialApiProvider:
     ) -> list[AvailabilityRecord]:
         catalog = await self._fetch_route_catalog()
         wanted_routes = [normalize_route_code(route) for route in routes]
-        day_board_cache: dict[date, dict[str, AvailabilityRecord]] = {}
         records: list[AvailabilityRecord] = []
+        attempted = 0
+        succeeded = 0
 
+        # The online purchase endpoint (/visita/consulta-horarios) is the only
+        # meaningful signal: it reflects tickets actually available to buy online.
+        # The on-site day-board (/comunes/disponibilidad-actual) is deliberately
+        # NOT used — it feeds the in-person sales screen and does not represent
+        # online-purchasable inventory.
         for visit_date in visit_dates:
             for route_code in wanted_routes:
                 route_meta = catalog.get(route_code)
@@ -309,10 +277,14 @@ class OfficialApiProvider:
                     )
                     continue
 
+                attempted += 1
                 try:
                     records.append(await self._fetch_online_route(visit_date, route_meta))
-                    continue
+                    succeeded += 1
                 except Exception as exc:
+                    # Skip this route on a transient failure: keep the last stored
+                    # value so an error can't be misread as a 0 -> >0 change.
+                    PROVIDER_FAILURES.labels(provider="official_api").inc()
                     logger.warning(
                         "official_online_api_failed",
                         extra={
@@ -322,29 +294,10 @@ class OfficialApiProvider:
                         },
                     )
 
-                try:
-                    if visit_date not in day_board_cache:
-                        day_board_cache[visit_date] = await self._fetch_day_board(visit_date)
-                    fallback = day_board_cache[visit_date].get(route_code)
-                    if fallback is not None:
-                        records.append(fallback)
-                    else:
-                        records.append(
-                            AvailabilityRecord(
-                                visit_date=visit_date,
-                                route=route_code,
-                                route_name=route_meta.name,
-                                quantity=0,
-                                source="official_day_board_missing",
-                                checked_at=utcnow(),
-                                raw={},
-                            )
-                        )
-                except Exception as exc:
-                    PROVIDER_FAILURES.labels(provider="official_api").inc()
-                    raise ProviderError(
-                        f"Official API failed for {visit_date.isoformat()} {route_code}: {exc}"
-                    ) from exc
+        if attempted and not succeeded:
+            raise ProviderError(
+                f"Official online API returned no data for any of {attempted} route/date queries"
+            )
 
         return records
 
@@ -364,6 +317,12 @@ class PlaywrightProvider:
             from playwright.async_api import async_playwright
         except ImportError as exc:
             raise ProviderError("Playwright is not installed") from exc
+
+        # NOTE: this scrapes the on-site availability board (/comunes/disponibilidad-actual),
+        # which is NOT online-purchasable availability. It is retained for manual use only
+        # (PROVIDER_MODE=playwright) and needs reworking to drive the real online purchase
+        # flow before it can be trusted as a fallback.
+        logger.warning("playwright_provider_reads_onsite_board_not_online_availability")
 
         wanted_routes = [normalize_route_code(route) for route in routes]
         records: list[AvailabilityRecord] = []
@@ -513,23 +472,16 @@ class AutoProvider:
         routes: Sequence[str],
     ) -> list[AvailabilityRecord]:
         mode = self.settings.provider_mode.lower()
-        if mode == "api":
-            self.last_provider = self.api.name
-            return await self.api.fetch_availability(visit_dates, routes)
         if mode == "playwright":
             self.last_provider = self.browser.name
             return await self.browser.fetch_availability(visit_dates, routes)
 
-        try:
-            records = await self.api.fetch_availability(visit_dates, routes)
-            self.last_provider = self.api.name
-            return records
-        except Exception as exc:
-            PROVIDER_FAILURES.labels(provider="official_api").inc()
-            logger.warning("official_api_failed_using_playwright", extra={"error": str(exc)})
-            records = await self.browser.fetch_availability(visit_dates, routes)
-            self.last_provider = self.browser.name
-            return records
+        # "auto" and "api" both use the official online API. There is no automatic
+        # fallback to Playwright: the only Playwright path reads the on-site day-board,
+        # which is not online-purchasable availability, so falling back to it could fire
+        # misleading alerts. Set PROVIDER_MODE=playwright explicitly to opt into it.
+        self.last_provider = self.api.name
+        return await self.api.fetch_availability(visit_dates, routes)
 
     async def aclose(self) -> None:
         await self.api.aclose()

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import AvailabilityChange, AvailabilityRecord, utcnow
+from .models import AvailabilityChange, AvailabilityRecord, ThresholdAlert, utcnow
 
 
 def _dt(value: datetime) -> str:
@@ -73,6 +73,28 @@ class SQLiteStorage:
                     status TEXT NOT NULL,
                     provider TEXT,
                     error TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS slot_current (
+                    visit_date TEXT NOT NULL,
+                    route TEXT NOT NULL,
+                    slot TEXT NOT NULL,
+                    route_name TEXT NOT NULL,
+                    available INTEGER NOT NULL,
+                    capacity INTEGER,
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (visit_date, route, slot)
+                );
+
+                CREATE TABLE IF NOT EXISTS slot_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    visit_date TEXT NOT NULL,
+                    route TEXT NOT NULL,
+                    slot TEXT NOT NULL,
+                    old_available INTEGER,
+                    new_available INTEGER NOT NULL,
+                    capacity INTEGER,
+                    seen_at TEXT NOT NULL
                 );
                 """
             )
@@ -154,10 +176,13 @@ class SQLiteStorage:
                 )
         return changes
 
-    def record_notification(
+    def _insert_notification(
         self,
-        change: AvailabilityChange,
         *,
+        visit_date: str,
+        route: str,
+        route_name: str,
+        availability: int,
         channel: str,
         reason: str,
     ) -> None:
@@ -169,16 +194,89 @@ class SQLiteStorage:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    change.visit_date.isoformat(),
-                    change.route,
-                    change.route_name,
-                    change.new_quantity,
-                    channel,
-                    reason,
-                    _dt(utcnow()),
-                ),
+                (visit_date, route, route_name, availability, channel, reason, _dt(utcnow())),
             )
+
+    def record_notification(
+        self,
+        change: AvailabilityChange,
+        *,
+        channel: str,
+        reason: str,
+    ) -> None:
+        self._insert_notification(
+            visit_date=change.visit_date.isoformat(),
+            route=change.route,
+            route_name=change.route_name,
+            availability=change.new_quantity,
+            channel=channel,
+            reason=reason,
+        )
+
+    def record_threshold_notification(
+        self,
+        alert: ThresholdAlert,
+        *,
+        channel: str,
+        reason: str,
+    ) -> None:
+        route_label = f"{alert.route_name} {alert.slot}" if alert.slot else alert.route_name
+        self._insert_notification(
+            visit_date=alert.visit_date.isoformat(),
+            route=alert.route,
+            route_name=route_label,
+            availability=alert.available,
+            channel=channel,
+            reason=reason,
+        )
+
+    def record_slot(
+        self,
+        *,
+        visit_date: date,
+        route: str,
+        route_name: str,
+        slot: str,
+        available: int,
+        capacity: int | None,
+    ) -> int | None:
+        """Upsert a watched slot's availability; return the previously stored value
+        (None if first seen). Appends to slot_history when the value changes."""
+        key_date = visit_date.isoformat()
+        seen_at = _dt(utcnow())
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT available FROM slot_current WHERE visit_date=? AND route=? AND slot=?",
+                (key_date, route, slot),
+            ).fetchone()
+            previous = None if row is None else int(row["available"])
+
+            if previous != available:
+                self._conn.execute(
+                    """
+                    INSERT INTO slot_history (
+                        visit_date, route, slot, old_available, new_available, capacity, seen_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (key_date, route, slot, previous, available, capacity, seen_at),
+                )
+
+            self._conn.execute(
+                """
+                INSERT INTO slot_current (
+                    visit_date, route, slot, route_name, available, capacity, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(visit_date, route, slot) DO UPDATE SET
+                    route_name = excluded.route_name,
+                    available = excluded.available,
+                    capacity = excluded.capacity,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (key_date, route, slot, route_name, available, capacity, seen_at),
+            )
+        return previous
 
     def record_monitor_run(
         self,
@@ -220,6 +318,17 @@ class SQLiteStorage:
                 LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_slot_current(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT visit_date, route, route_name, slot, available, capacity, last_seen_at
+                FROM slot_current
+                ORDER BY visit_date ASC, route ASC, slot ASC
+                """
             ).fetchall()
         return [dict(row) for row in rows]
 

@@ -17,7 +17,7 @@ class FakeNotifier:
     def enabled(self) -> bool:
         return self._enabled
 
-    async def send(self, change: AvailabilityChange) -> None:
+    async def send(self, subject: str, message: str) -> None:
         self.sent += 1
         if self.fail:
             raise RuntimeError(f"{self.channel} failed")

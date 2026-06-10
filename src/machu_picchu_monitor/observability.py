@@ -29,6 +29,16 @@ AVAILABILITY_GAUGE = Gauge(
     "Current available tickets by visit date and route.",
     ["visit_date", "route"],
 )
+SLOT_AVAILABILITY_GAUGE = Gauge(
+    "machu_picchu_slot_availability",
+    "Current available tickets for a watched time slot.",
+    ["visit_date", "route", "slot"],
+)
+THRESHOLD_ALERTS = Counter(
+    "machu_picchu_threshold_alerts_total",
+    "Below-threshold (low-stock) alerts fired by rule.",
+    ["route", "slot"],
+)
 LAST_SUCCESS_TIMESTAMP = Gauge(
     "machu_picchu_last_success_timestamp_seconds",
     "Unix timestamp of the last successful monitor run.",

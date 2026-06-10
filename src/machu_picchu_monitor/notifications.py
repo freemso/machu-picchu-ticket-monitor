@@ -9,7 +9,7 @@ from typing import Protocol
 import httpx
 
 from .config import Settings
-from .models import AvailabilityChange
+from .models import AvailabilityChange, ThresholdAlert
 from .observability import NOTIFICATIONS_SENT
 
 logger = logging.getLogger(__name__)
@@ -21,8 +21,12 @@ class Notifier(Protocol):
     def enabled(self) -> bool:
         ...
 
-    async def send(self, change: AvailabilityChange) -> None:
+    async def send(self, subject: str, message: str) -> None:
         ...
+
+
+def subject_for_change(change: AvailabilityChange) -> str:
+    return f"Machu Picchu availability: {change.route} on {change.visit_date.isoformat()}"
 
 
 def format_message(change: AvailabilityChange) -> str:
@@ -37,6 +41,27 @@ def format_message(change: AvailabilityChange) -> str:
     )
 
 
+def subject_for_threshold(alert: ThresholdAlert) -> str:
+    where = f"{alert.route} {alert.slot}" if alert.slot else alert.route
+    return f"Machu Picchu low stock: {where} on {alert.visit_date.isoformat()}"
+
+
+def format_threshold_message(alert: ThresholdAlert) -> str:
+    cap = "" if alert.capacity is None else f" / {alert.capacity}"
+    prev = "unknown" if alert.previous is None else str(alert.previous)
+    slot_line = f"Slot: {alert.slot}\n" if alert.slot else ""
+    return (
+        f"Machu Picchu availability dropped below {alert.threshold}\n"
+        f"Date: {alert.visit_date.isoformat()}\n"
+        f"Route: {alert.route_name} ({alert.route})\n"
+        f"{slot_line}"
+        f"Available: {alert.available}{cap}\n"
+        f"Previous: {prev}\n"
+        f"Threshold: {alert.threshold}\n"
+        f"Seen at: {alert.seen_at.isoformat()}"
+    )
+
+
 class TelegramNotifier:
     channel = "telegram"
 
@@ -46,7 +71,7 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
 
-    async def send(self, change: AvailabilityChange) -> None:
+    async def send(self, subject: str, message: str) -> None:
         if not self.enabled():
             raise RuntimeError("Telegram notifier is not configured")
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
@@ -55,7 +80,7 @@ class TelegramNotifier:
                 url,
                 json={
                     "chat_id": self.settings.telegram_chat_id,
-                    "text": format_message(change),
+                    "text": message,
                     "disable_web_page_preview": True,
                 },
             )
@@ -71,13 +96,13 @@ class SlackNotifier:
     def enabled(self) -> bool:
         return bool(self.settings.slack_webhook_url)
 
-    async def send(self, change: AvailabilityChange) -> None:
+    async def send(self, subject: str, message: str) -> None:
         if not self.enabled():
             raise RuntimeError("Slack notifier is not configured")
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 self.settings.slack_webhook_url,
-                json={"text": format_message(change)},
+                json={"text": message},
             )
             response.raise_for_status()
 
@@ -95,17 +120,17 @@ class EmailNotifier:
             and self.settings.smtp_to
         )
 
-    async def send(self, change: AvailabilityChange) -> None:
+    async def send(self, subject: str, message: str) -> None:
         if not self.enabled():
             raise RuntimeError("Email notifier is not configured")
-        await asyncio.to_thread(self._send_sync, change)
+        await asyncio.to_thread(self._send_sync, subject, message)
 
-    def _send_sync(self, change: AvailabilityChange) -> None:
+    def _send_sync(self, subject: str, body: str) -> None:
         message = EmailMessage()
-        message["Subject"] = f"Machu Picchu availability: {change.route} on {change.visit_date}"
+        message["Subject"] = subject
         message["From"] = self.settings.smtp_from
         message["To"] = self.settings.smtp_to
-        message.set_content(format_message(change))
+        message.set_content(body)
 
         with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=20) as smtp:
             if self.settings.smtp_use_tls:
@@ -138,6 +163,12 @@ class NotificationManager:
         return [notifier for notifier in configured if notifier.channel == preference]
 
     async def send(self, change: AvailabilityChange) -> list[str]:
+        return await self._dispatch(subject_for_change(change), format_message(change))
+
+    async def send_threshold(self, alert: ThresholdAlert) -> list[str]:
+        return await self._dispatch(subject_for_threshold(alert), format_threshold_message(alert))
+
+    async def _dispatch(self, subject: str, message: str) -> list[str]:
         sent_channels: list[str] = []
         primary_notifiers = self.selected_notifiers()
         backup_notifiers = self.selected_notifiers(set(self.settings.backup_notification_values))
@@ -154,7 +185,7 @@ class NotificationManager:
 
         for notifier in primary_notifiers:
             try:
-                await notifier.send(change)
+                await notifier.send(subject, message)
                 NOTIFICATIONS_SENT.labels(channel=notifier.channel).inc()
                 sent_channels.append(notifier.channel)
             except Exception as exc:
@@ -168,7 +199,7 @@ class NotificationManager:
 
         for notifier in backup_notifiers:
             try:
-                await notifier.send(change)
+                await notifier.send(subject, message)
                 NOTIFICATIONS_SENT.labels(channel=notifier.channel).inc()
                 sent_channels.append(notifier.channel)
                 logger.info("backup_notification_sent", extra={"channel": notifier.channel})

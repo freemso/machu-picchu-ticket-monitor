@@ -14,7 +14,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir "poetry==$POETRY_VERSION"
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md rules.json ./
 COPY src ./src
 
 RUN poetry install --only main --no-root \
