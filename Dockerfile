@@ -28,7 +28,6 @@ RUN useradd --create-home --shell /usr/sbin/nologin appuser \
 USER appuser
 
 EXPOSE 8000
-VOLUME ["/app/data"]
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1

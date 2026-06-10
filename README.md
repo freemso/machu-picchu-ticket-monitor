@@ -155,6 +155,7 @@ BACKUP_NOTIFICATIONS=
 SQLITE_PATH=/app/data/availability.sqlite3
 PROVIDER_MODE=api
 LOG_LEVEL=INFO
+RAILWAY_RUN_UID=0
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 ```
@@ -166,8 +167,9 @@ Attach a Railway volume to the service with mount path:
 ```
 
 The volume keeps SQLite state between runs so alerts only send when availability appears or
-increases. For the first cloud deploy, run the cron service manually once from Railway and check
-the logs for six target checks across `2026-08-19` and `2026-08-20`.
+increases. `RAILWAY_RUN_UID=0` lets the process write to the root-owned Railway volume. For the
+first cloud deploy, run the cron service manually once from Railway and check the logs for six
+target checks across `2026-08-19` and `2026-08-20`.
 
 ## GitHub Actions
 
