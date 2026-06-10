@@ -4,5 +4,5 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "mp-monitor check"
-cronSchedule = "*/15 * * * *"
+cronSchedule = "0 * * * *"
 restartPolicyType = "NEVER"
