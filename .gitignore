@@ -1,4 +1,5 @@
 .venv/
+node_modules/
 .poetry-cache/
 .playwright-browsers/
 __pycache__/
@@ -8,5 +9,5 @@ __pycache__/
 .env
 data/*.sqlite3
 data/*.sqlite3-*
-work/site-assets/
+work/
 outputs/
