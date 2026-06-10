@@ -4,7 +4,7 @@ import asyncio
 import html
 import logging
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -14,6 +14,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from .config import get_settings
 from .monitor import MonitorService
 from .observability import AVAILABILITY_GAUGE, setup_logging
+from .route_matching import display_route
 from .storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
@@ -27,68 +28,131 @@ def _format_dt(value: str | datetime | None) -> str:
     return value
 
 
+def _fmt_ts(value: str | datetime | None) -> str:
+    """Short local-time stamp for display, e.g. 'Jun 10 14:30'."""
+    if value is None:
+        return "never"
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value.astimezone().strftime("%b %d %H:%M")
+
+
 def _e(value: Any) -> str:
     return html.escape(str(value))
 
 
 def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -> str:
-    current = storage.list_current()
-    history = storage.list_history(limit=25)
-    slots = storage.list_slot_current()
-    thresholds = {
-        (rule.visit_date.isoformat(), rule.route, rule.slot): rule.threshold
-        for rule in monitor.rules
-        if rule.type == "below_threshold"
-    }
-    latest_seen = storage.latest_seen_at()
+    rules = monitor.rules
+    watched_keys = {(rule.visit_date.isoformat(), rule.route) for rule in rules}
+    dates = sorted({rule.visit_date.isoformat() for rule in rules})
+    current = {(row["visit_date"], row["route"]): row for row in storage.list_current()}
+    slots: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in storage.list_slot_current():
+        slots.setdefault((row["visit_date"], row["route"]), []).append(row)
 
-    current_rows = "\n".join(
-        f"""
-        <tr>
-          <td>{_e(row["visit_date"])}</td>
-          <td><strong>{_e(row["route"])}</strong><span>{_e(row["route_name"])}</span></td>
-          <td class="qty">{_e(row["availability"])}</td>
-          <td>{_e(row["source"])}</td>
-          <td>{_e(row["last_seen_at"])}</td>
-        </tr>
-        """
-        for row in current
-    ) or '<tr><td colspan="5" class="empty">No availability checks recorded yet.</td></tr>'
+    alert_desc: dict[tuple[str, str], list[str]] = {}
+    for rule in rules:
+        key = (rule.visit_date.isoformat(), rule.route)
+        if rule.type == "increase":
+            alert_desc.setdefault(key, []).append("on increase")
+        elif rule.type == "below_threshold":
+            where = f" @ {rule.slot[:5]}" if rule.slot else " total"
+            alert_desc.setdefault(key, []).append(f"< {rule.threshold}{where}")
 
+    date_sections: list[str] = []
+    for visit_date in dates:
+        routes = sorted(
+            {rule.route for rule in rules if rule.visit_date.isoformat() == visit_date}
+        )
+        weekday = date.fromisoformat(visit_date).strftime("%A")
+        body_rows: list[str] = []
+        for route in routes:
+            key = (visit_date, route)
+            row = current.get(key)
+            qty = None if row is None else int(row["availability"])
+            name = row["route_name"] if row else display_route(route)
+            seen = _fmt_ts(row["last_seen_at"]) if row else "never"
+
+            if qty is None:
+                qty_cell = '<td class="zero">—</td>'
+            elif qty > 0:
+                qty_cell = f'<td class="qty">{qty}</td>'
+            else:
+                qty_cell = '<td class="zero">0</td>'
+
+            slot_bits = []
+            for slot_row in slots.get(key, []):
+                cap = f"/{slot_row['capacity']}" if slot_row["capacity"] else ""
+                slot_bits.append(
+                    f"{str(slot_row['slot'])[:5]} → {slot_row['available']}{cap}"
+                )
+
+            body_rows.append(
+                f"""
+                <tr>
+                  <td><strong>{_e(route)}</strong><span>{_e(name)}</span></td>
+                  {qty_cell}
+                  <td>{_e(", ".join(slot_bits) or "—")}</td>
+                  <td>{_e("; ".join(alert_desc.get(key, [])) or "—")}</td>
+                  <td>{_e(seen)}</td>
+                </tr>
+                """
+            )
+
+        date_sections.append(
+            f"""
+            <section class="panel">
+              <div class="panel-head">
+                <h2>{_e(visit_date)} <span class="muted-inline">{_e(weekday)}</span></h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Route</th>
+                      <th>Available online</th>
+                      <th>Watched slots</th>
+                      <th>Alert rules</th>
+                      <th>Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>{"".join(body_rows)}</tbody>
+                </table>
+              </div>
+            </section>
+            """
+        )
+
+    history = [
+        row
+        for row in storage.list_history(limit=100)
+        if (row["visit_date"], row["route"]) in watched_keys
+    ][:15]
     history_rows = "\n".join(
         f"""
         <tr>
-          <td>{_e(row["seen_at"])}</td>
+          <td>{_e(_fmt_ts(row["seen_at"]))}</td>
           <td>{_e(row["visit_date"])}</td>
-          <td><strong>{_e(row["route"])}</strong><span>{_e(row["route_name"])}</span></td>
-          <td>{_e(row["old_availability"])}</td>
-          <td class="qty">{_e(row["new_availability"])}</td>
-          <td>{_e(row["source"])}</td>
+          <td><strong>{_e(row["route"])}</strong></td>
+          <td>{_e("—" if row["old_availability"] is None else row["old_availability"])}
+              → <strong>{_e(row["new_availability"])}</strong></td>
         </tr>
         """
         for row in history
-    ) or '<tr><td colspan="6" class="empty">No historical changes yet.</td></tr>'
-
-    slot_rows = "\n".join(
-        f"""
-        <tr>
-          <td>{_e(row["visit_date"])}</td>
-          <td><strong>{_e(row["route"])}</strong><span>{_e(row["route_name"])}</span></td>
-          <td>{_e(row["slot"])}</td>
-          <td class="qty">{_e(row["available"])}</td>
-          <td>{_e(row["capacity"])}</td>
-          <td>{_e(thresholds.get((row["visit_date"], row["route"], row["slot"]), "—"))}</td>
-          <td>{_e(row["last_seen_at"])}</td>
-        </tr>
-        """
-        for row in slots
-    ) or '<tr><td colspan="7" class="empty">No watched slots yet.</td></tr>'
+    ) or '<tr><td colspan="4" class="empty">No changes recorded yet.</td></tr>'
 
     status = monitor.status
     status_class = "ok" if status.last_error is None else "bad"
     running = "Running" if status.running else "Idle"
-    last_success = _format_dt(status.last_success_at)
+    latest_seen = storage.latest_seen_at()
     last_error = status.last_error or "None"
+    no_rules = (
+        '<section class="panel thin"><p class="empty">No alert rules configured.</p></section>'
+    )
+    dates_html = "".join(date_sections) or no_rules
 
     return f"""
     <section class="status-grid">
@@ -98,11 +162,11 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
       </div>
       <div class="metric">
         <span>Last checked</span>
-        <strong>{_e(latest_seen or "Never")}</strong>
+        <strong>{_e(_fmt_ts(latest_seen))}</strong>
       </div>
       <div class="metric">
         <span>Last success</span>
-        <strong>{_e(last_success)}</strong>
+        <strong>{_e(_fmt_ts(status.last_success_at))}</strong>
       </div>
       <div class="metric">
         <span>Provider</span>
@@ -110,67 +174,27 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
       </div>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Current Availability</h2>
-        <form method="post" action="/api/run-once">
-          <button type="submit">Run check</button>
-        </form>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Route</th>
-              <th>Available</th>
-              <th>Source</th>
-              <th>Last seen</th>
-            </tr>
-          </thead>
-          <tbody>{current_rows}</tbody>
-        </table>
-      </div>
-    </section>
+    <div class="toolbar">
+      <form method="post" action="/api/run-once">
+        <button type="submit">Run check now</button>
+      </form>
+    </div>
+
+    {dates_html}
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Watched Slots (low-stock rules)</h2>
-        <span class="muted">Alerts when available drops below threshold</span>
+        <h2>Recent Changes</h2>
+        <span class="muted">Last 15 for monitored dates</span>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
+              <th>When</th>
               <th>Date</th>
               <th>Route</th>
-              <th>Slot</th>
-              <th>Available</th>
-              <th>Capacity</th>
-              <th>Threshold</th>
-              <th>Last seen</th>
-            </tr>
-          </thead>
-          <tbody>{slot_rows}</tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Historical Changes</h2>
-        <span class="muted">Last 25 changes</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Seen at</th>
-              <th>Date</th>
-              <th>Route</th>
-              <th>Previous</th>
-              <th>New</th>
-              <th>Source</th>
+              <th>Change</th>
             </tr>
           </thead>
           <tbody>{history_rows}</tbody>
@@ -289,6 +313,9 @@ def render_page(monitor: MonitorService, fragment: str) -> str:
           th {{ color: #475467; background: #f9fafb; font-weight: 700; }}
           td span {{ display: block; color: var(--muted); margin-top: 3px; }}
           .qty {{ color: var(--gold); font-weight: 800; font-variant-numeric: tabular-nums; }}
+          .zero {{ color: var(--muted); font-variant-numeric: tabular-nums; }}
+          .muted-inline {{ color: var(--muted); font-weight: 400; font-size: .85rem; }}
+          .toolbar {{ display: flex; justify-content: flex-end; margin-bottom: 4px; }}
           .empty {{ color: var(--muted); text-align: center; padding: 26px; }}
           pre {{
             margin: 10px 0 0;

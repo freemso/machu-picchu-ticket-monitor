@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     alert_rules: str = ""
     alert_rules_file: Path = Path("rules.json")
 
+    # Route catalog (IDs) changes rarely; cache it on disk next to the SQLite file.
+    route_catalog_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=60)
+
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 

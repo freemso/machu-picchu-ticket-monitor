@@ -6,8 +6,11 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from collections.abc import Iterable, Sequence
+from dataclasses import asdict
 from datetime import date
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
@@ -41,11 +44,14 @@ class AvailabilityProvider(Protocol):
 class OfficialApiProvider:
     name = "official_api"
 
+    SERVER_TS_REUSE_SECONDS = 60.0
+
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self.settings = settings
         self._client = client
         self._owns_client = client is None
         self._route_catalog: dict[str, RouteMetadata] | None = None
+        self._server_ts: tuple[str, float] | None = None
 
     async def __aenter__(self) -> OfficialApiProvider:
         await self._ensure_client()
@@ -123,18 +129,27 @@ class OfficialApiProvider:
                 )
                 await asyncio.sleep(delay)
 
-        raise ProviderError(f"Official API request failed for {path}: {last_error}")
+        hint = ""
+        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 403:
+            hint = " (likely temporary WAF rate-limit; should clear on its own)"
+        raise ProviderError(f"Official API request failed for {path}: {last_error}{hint}")
 
     async def _server_timestamp(self) -> str:
+        # One server-time fetch covers all signed requests in a run; re-fetching
+        # before every request doubled our API traffic for no benefit.
+        if self._server_ts and time.monotonic() - self._server_ts[1] < self.SERVER_TS_REUSE_SECONDS:
+            return self._server_ts[0]
         payload = await self._request_json(
             "GET",
             "/comunes/tiempo-servidor",
             referer=self.settings.place_url,
         )
         try:
-            return str(payload["tiempoServidor"])
+            stamp = str(payload["tiempoServidor"])
         except (KeyError, TypeError) as exc:
             raise ProviderError(f"Unexpected server time payload: {payload!r}") from exc
+        self._server_ts = (stamp, time.monotonic())
+        return stamp
 
     def _sign(self, timestamp: str) -> str:
         secret = self.settings.official_api_secret
@@ -165,19 +180,71 @@ class OfficialApiProvider:
         plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
         return json.loads(plaintext.decode("utf-8"))
 
+    def _catalog_cache_path(self) -> Path:
+        return Path(self.settings.sqlite_path).parent / "route_catalog.json"
+
+    def _load_catalog_cache(self) -> tuple[dict[str, RouteMetadata], float] | None:
+        """Return (catalog, age_seconds) from the on-disk cache, or None."""
+        try:
+            payload = json.loads(self._catalog_cache_path().read_text(encoding="utf-8"))
+            catalog = {
+                item["code"]: RouteMetadata(
+                    code=str(item["code"]),
+                    name=str(item["name"]),
+                    circuit_id=int(item["circuit_id"]),
+                    route_id=int(item["route_id"]),
+                )
+                for item in payload["routes"]
+            }
+            age = max(0.0, time.time() - float(payload["saved_at"]))
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return None
+        return (catalog, age) if catalog else None
+
+    def _save_catalog_cache(self, catalog: dict[str, RouteMetadata]) -> None:
+        try:
+            path = self._catalog_cache_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "saved_at": time.time(),
+                        "routes": [asdict(meta) for meta in catalog.values()],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("route_catalog_cache_write_failed", extra={"error": str(exc)})
+
     async def _fetch_route_catalog(self) -> dict[str, RouteMetadata]:
         if self._route_catalog is not None:
             return self._route_catalog
 
-        payload = await self._request_json(
-            "GET",
-            f"/visita/lugar-info?idLugar={self.settings.official_place_slug}",
-            referer=self.settings.place_url,
-        )
+        # Route IDs change rarely; the on-disk cache (persisted on the data volume)
+        # makes this 1 API call per TTL instead of per run, and keeps runs alive
+        # when the catalog endpoint is briefly rate-limited.
+        cached = self._load_catalog_cache()
+        if cached and cached[1] < self.settings.route_catalog_ttl_seconds:
+            self._route_catalog = cached[0]
+            return cached[0]
+
         try:
+            payload = await self._request_json(
+                "GET",
+                f"/visita/lugar-info?idLugar={self.settings.official_place_slug}",
+                referer=self.settings.place_url,
+            )
             circuitos = json.loads(payload["circuitos"])
-        except (KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise ProviderError("Could not parse official route catalog") from exc
+        except (ProviderError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            if cached:
+                logger.warning(
+                    "route_catalog_using_stale_cache",
+                    extra={"age_seconds": int(cached[1]), "error": str(exc)},
+                )
+                self._route_catalog = cached[0]
+                return cached[0]
+            raise ProviderError(f"Could not load official route catalog: {exc}") from exc
 
         catalog: dict[str, RouteMetadata] = {}
         for circuit in circuitos:
@@ -192,7 +259,10 @@ class OfficialApiProvider:
                     circuit_id=int(circuit["nidcircuito"]),
                     route_id=int(route["nidruta"]),
                 )
+        if not catalog:
+            raise ProviderError("Official route catalog was empty")
         self._route_catalog = catalog
+        self._save_catalog_cache(catalog)
         return catalog
 
     async def _fetch_online_route(

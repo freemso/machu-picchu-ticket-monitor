@@ -1,4 +1,5 @@
 from machu_picchu_monitor.config import Settings
+from machu_picchu_monitor.models import RouteMetadata
 from machu_picchu_monitor.providers import OfficialApiProvider
 
 SAMPLE_ENCRYPTED_HORARIOS = (
@@ -28,3 +29,23 @@ def test_decrypts_official_encrypted_horarios_payload() -> None:
     assert isinstance(rows, list)
     assert rows[0]["dhora_ini"] == "07:00:00"
     assert rows[0]["ncupo_actual"] == 31
+
+
+def test_route_catalog_disk_cache_roundtrip(tmp_path) -> None:
+    settings = Settings(sqlite_path=tmp_path / "a.sqlite3")
+    provider = OfficialApiProvider(settings)
+    catalog = {"2A": RouteMetadata(code="2A", name="Ruta 2-A", circuit_id=2, route_id=11)}
+
+    provider._save_catalog_cache(catalog)
+    loaded = provider._load_catalog_cache()
+
+    assert loaded is not None
+    cached_catalog, age = loaded
+    assert cached_catalog["2A"].route_id == 11
+    assert cached_catalog["2A"].circuit_id == 2
+    assert age < 60
+
+
+def test_route_catalog_cache_missing_returns_none(tmp_path) -> None:
+    settings = Settings(sqlite_path=tmp_path / "a.sqlite3")
+    assert OfficialApiProvider(settings)._load_catalog_cache() is None
