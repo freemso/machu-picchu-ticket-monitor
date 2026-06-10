@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .config import get_settings
@@ -400,10 +400,23 @@ def create_app() -> FastAPI:
         return request.app.state.storage.list_history(limit=max(1, min(limit, 500)))
 
     @app.post("/api/run-once")
-    async def run_once(request: Request) -> JSONResponse:
+    async def run_once(request: Request) -> Response:
         monitor: MonitorService = request.app.state.monitor
-        alerts = await monitor.run_once()
-        return JSONResponse({"ok": True, "alerts": alerts})
+        try:
+            alerts = await monitor.run_once()
+            ok, error = True, None
+        except Exception as exc:
+            # run_once already logged and recorded the failure; surface it gracefully
+            ok, alerts, error = False, 0, str(exc)
+
+        # The dashboard button is a plain HTML form: redirect back so the page
+        # re-renders (errors appear in the "Last Error" panel) instead of a 5xx.
+        if "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse(url="/", status_code=303)
+        payload = {"ok": ok, "alerts": alerts}
+        if error:
+            payload["error"] = error
+        return JSONResponse(payload, status_code=200 if ok else 502)
 
     return app
 
