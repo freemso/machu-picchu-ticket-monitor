@@ -1,0 +1,12 @@
+.venv/
+.poetry-cache/
+.playwright-browsers/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+.env
+data/*.sqlite3
+data/*.sqlite3-*
+work/site-assets/
+outputs/

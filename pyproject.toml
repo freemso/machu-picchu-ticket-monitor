@@ -1,0 +1,40 @@
+[tool.poetry]
+name = "machu-picchu-ticket-monitor"
+version = "0.1.0"
+description = "Availability-only monitor for official Machu Picchu ticket routes."
+authors = ["Codex <codex@openai.com>"]
+readme = "README.md"
+packages = [{ include = "machu_picchu_monitor", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+cryptography = ">=39,<44"
+fastapi = ">=0.111,<1.0"
+httpx = ">=0.27,<1.0"
+playwright = ">=1.44,<2.0"
+prometheus-client = ">=0.20,<1.0"
+pydantic-settings = ">=2.3,<3.0"
+uvicorn = { extras = ["standard"], version = ">=0.30,<1.0" }
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.2,<9.0"
+pytest-asyncio = ">=0.23,<1.0"
+ruff = ">=0.5,<1.0"
+
+[tool.poetry.scripts]
+mp-monitor = "machu_picchu_monitor.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

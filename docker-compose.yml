@@ -1,0 +1,23 @@
+services:
+  machu-picchu-monitor:
+    build: .
+    container_name: machu-picchu-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TARGET_DATES: ${TARGET_DATES:-2026-08-24,2026-08-25}
+      TARGET_ROUTES: ${TARGET_ROUTES:-2A,2B,3A,3B,1C}
+      PREFERRED_NOTIFICATION: ${PREFERRED_NOTIFICATION:-telegram}
+      SQLITE_PATH: /app/data/availability.sqlite3
+      RUN_MONITOR_IN_WEB: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

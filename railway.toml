@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "mp-monitor check"
+cronSchedule = "*/30 * * * *"
+restartPolicyType = "NEVER"
