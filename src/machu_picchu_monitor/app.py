@@ -175,8 +175,9 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
     </section>
 
     <div class="toolbar">
-      <form method="post" action="/api/run-once">
-        <button type="submit">Run check now</button>
+      <form method="post" action="/api/run-once" id="run-check-form">
+        <span id="run-check-status" class="check-status"></span>
+        <button type="submit" id="run-check-btn">Run check now</button>
       </form>
     </div>
 
@@ -315,7 +316,17 @@ def render_page(monitor: MonitorService, fragment: str) -> str:
           .qty {{ color: var(--gold); font-weight: 800; font-variant-numeric: tabular-nums; }}
           .zero {{ color: var(--muted); font-variant-numeric: tabular-nums; }}
           .muted-inline {{ color: var(--muted); font-weight: 400; font-size: .85rem; }}
-          .toolbar {{ display: flex; justify-content: flex-end; margin-bottom: 4px; }}
+          .toolbar {{ display: flex; justify-content: flex-end; align-items: center;
+            gap: 12px; margin-bottom: 4px; }}
+          .toolbar form {{ display: flex; align-items: center; gap: 10px; }}
+          button:disabled {{ opacity: .6; cursor: progress; }}
+          .check-status {{ font-size: .85rem; }}
+          .check-status.err {{ color: var(--warn); max-width: 60ch; overflow-wrap: anywhere; }}
+          .check-status.ok {{ color: var(--accent-dark); }}
+          .spinner {{ display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+            margin-right: 6px; border: 2px solid var(--line); border-top-color: var(--accent);
+            border-radius: 50%; animation: spin .7s linear infinite; }}
+          @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
           .empty {{ color: var(--muted); text-align: center; padding: 26px; }}
           pre {{
             margin: 10px 0 0;
@@ -336,12 +347,53 @@ def render_page(monitor: MonitorService, fragment: str) -> str:
         </header>
         <main id="dashboard">{fragment}</main>
         <script>
+          let checking = false;
           async function refreshDashboard() {{
+            if (checking) return;  // don't clobber the in-progress status line
             const response = await fetch('/partials/dashboard', {{ cache: 'no-store' }});
             if (response.ok) {{
               document.getElementById('dashboard').innerHTML = await response.text();
             }}
           }}
+          // Delegated so it keeps working after the fragment is re-rendered.
+          document.addEventListener('submit', async (event) => {{
+            if (event.target.id !== 'run-check-form') return;
+            event.preventDefault();
+            const btn = document.getElementById('run-check-btn');
+            const status = document.getElementById('run-check-status');
+            checking = true;
+            btn.disabled = true;
+            status.className = 'check-status';
+            status.innerHTML = '<span class="spinner"></span>Checking the official site…';
+            try {{
+              const res = await fetch('/api/run-once', {{
+                method: 'POST',
+                headers: {{ 'Accept': 'application/json' }},
+              }});
+              const data = await res.json().catch(() => ({{}}));
+              if (res.ok && data.ok) {{
+                status.className = 'check-status ok';
+                const n = data.alerts ? ' · ' + data.alerts + ' alert(s)' : '';
+                status.textContent = '✓ Updated' + n;
+                checking = false;
+                await refreshDashboard();
+                setTimeout(() => {{
+                  status.textContent = '';
+                  status.className = 'check-status';
+                }}, 4000);
+              }} else {{
+                status.className = 'check-status err';
+                status.textContent = '✗ ' + (data.error || ('HTTP ' + res.status));
+                checking = false;
+              }}
+            }} catch (err) {{
+              status.className = 'check-status err';
+              status.textContent = '✗ ' + err;
+              checking = false;
+            }} finally {{
+              btn.disabled = false;
+            }}
+          }});
           setInterval(refreshDashboard, 60000);
         </script>
       </body>
