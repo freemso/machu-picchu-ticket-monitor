@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import random
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict
@@ -324,50 +325,60 @@ class OfficialApiProvider:
         attempted = 0
         succeeded = 0
 
+        # Build the (date, route) work list, then shuffle it. The WAF allows only a
+        # handful of calls per IP per window, so later calls in a run get 403s; a
+        # fixed order would permanently starve whichever date/route comes last.
+        # Shuffling rotates coverage across runs so everything gets sampled over time.
+        pairs: list[tuple[date, str]] = [
+            (visit_date, route_code)
+            for visit_date in visit_dates
+            for route_code in wanted_routes
+        ]
+        random.shuffle(pairs)
+
         # The online purchase endpoint (/visita/consulta-horarios) is the only
         # meaningful signal: it reflects tickets actually available to buy online.
         # The on-site day-board (/comunes/disponibilidad-actual) is deliberately
         # NOT used — it feeds the in-person sales screen and does not represent
         # online-purchasable inventory.
-        for visit_date in visit_dates:
-            for route_code in wanted_routes:
-                route_meta = catalog.get(route_code)
-                if route_meta is None:
-                    logger.warning("route_not_found_in_catalog", extra={"route": route_code})
-                    records.append(
-                        AvailabilityRecord(
-                            visit_date=visit_date,
-                            route=route_code,
-                            route_name=display_route(route_code),
-                            quantity=0,
-                            source="official_catalog_missing",
-                            checked_at=utcnow(),
-                            raw={},
-                        )
+        for visit_date, route_code in pairs:
+            route_meta = catalog.get(route_code)
+            if route_meta is None:
+                logger.warning("route_not_found_in_catalog", extra={"route": route_code})
+                records.append(
+                    AvailabilityRecord(
+                        visit_date=visit_date,
+                        route=route_code,
+                        route_name=display_route(route_code),
+                        quantity=0,
+                        source="official_catalog_missing",
+                        checked_at=utcnow(),
+                        raw={},
                     )
-                    continue
+                )
+                continue
 
-                # Space out requests so the per-run burst doesn't trip the WAF's
-                # per-IP rate limit (which otherwise 403s the later calls).
-                if attempted and self.settings.inter_request_delay_seconds:
-                    await asyncio.sleep(self.settings.inter_request_delay_seconds)
+            # Space out requests so the per-run burst doesn't trip the WAF's
+            # per-IP rate limit (which otherwise 403s the later calls).
+            if attempted and self.settings.inter_request_delay_seconds:
+                await asyncio.sleep(self.settings.inter_request_delay_seconds)
 
-                attempted += 1
-                try:
-                    records.append(await self._fetch_online_route(visit_date, route_meta))
-                    succeeded += 1
-                except Exception as exc:
-                    # Skip this route on a transient failure: keep the last stored
-                    # value so an error can't be misread as a 0 -> >0 change.
-                    PROVIDER_FAILURES.labels(provider="official_api").inc()
-                    logger.warning(
-                        "official_online_api_failed",
-                        extra={
-                            "visit_date": visit_date.isoformat(),
-                            "route": route_code,
-                            "error": str(exc),
-                        },
-                    )
+            attempted += 1
+            try:
+                records.append(await self._fetch_online_route(visit_date, route_meta))
+                succeeded += 1
+            except Exception as exc:
+                # Skip this route on a transient failure: keep the last stored
+                # value so an error can't be misread as a 0 -> >0 change.
+                PROVIDER_FAILURES.labels(provider="official_api").inc()
+                logger.warning(
+                    "official_online_api_failed",
+                    extra={
+                        "visit_date": visit_date.isoformat(),
+                        "route": route_code,
+                        "error": str(exc),
+                    },
+                )
 
         if attempted and not succeeded:
             raise ProviderError(
