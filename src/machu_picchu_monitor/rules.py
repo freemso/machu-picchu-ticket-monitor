@@ -12,7 +12,9 @@ from .route_matching import normalize_route_code
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"increase", "below_threshold"}
+VALID_TYPES = {"available", "below_threshold"}
+# "increase" is the old name for "available"; accept it so existing rules keep working.
+TYPE_ALIASES = {"increase": "available"}
 _SLOT_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 
 
@@ -33,6 +35,7 @@ def _normalize_slot(value: Any) -> str | None:
 def _parse_rule(raw: dict[str, Any], index: int) -> AlertRule:
     try:
         rule_type = str(raw["type"]).strip().lower()
+        rule_type = TYPE_ALIASES.get(rule_type, rule_type)
         visit_date = date.fromisoformat(str(raw["date"]).strip())
         route = normalize_route_code(str(raw["route"]))
     except KeyError as exc:

@@ -27,36 +27,37 @@ The direct provider mirrors public calls used by the official frontend:
 ## Alert Rules
 
 All alerting is driven by a declarative list of rules in **`rules.json`**. To monitor more,
-add an object to that list — no code changes needed. Each rule is one of two types:
+add an object to that list — no code changes needed. Each rule is one of two types, and both
+**alert on every run while the condition currently holds** (a recurring reminder):
 
 | Field | Required | Notes |
 |-------|----------|-------|
 | `name` | optional | Label shown in logs / dashboard |
-| `type` | yes | `increase` or `below_threshold` |
+| `type` | yes | `available` (alert while >0) or `below_threshold` (alert while < threshold) |
 | `date` | yes | Visit date, `YYYY-MM-DD` |
 | `route` | yes | e.g. `2A`, `1C` (or `Circuit 2A`) |
-| `slot` | threshold only | Time slot `HH:MM` (e.g. `08:00`); omit to watch the route total |
-| `threshold` | `below_threshold` only | Alert fires when availability drops below this |
+| `slot` | optional | Time slot `HH:MM` (e.g. `08:00`); omit to watch the route total |
+| `threshold` | `below_threshold` only | Alert while availability is below this number |
 
 ```jsonc
 [
-  // Alert when route 2A becomes available (0 -> >0) or its count increases, on 2026-08-19
-  { "name": "2A available 08-19", "type": "increase", "date": "2026-08-19", "route": "2A" },
+  // Alert on every run while route 2A has any online availability on 2026-08-19
+  { "name": "2A available 08-19", "type": "available", "date": "2026-08-19", "route": "2A" },
 
-  // Alert when the 08:00 slot of route 1C drops below 20 tickets, on 2026-08-19
+  // Alert on every run while the 08:00 slot of route 1C is below 10 tickets, on 2026-08-19
   { "name": "1C 08:00 low stock", "type": "below_threshold",
-    "date": "2026-08-19", "route": "1C", "slot": "08:00", "threshold": 20 }
+    "date": "2026-08-19", "route": "1C", "slot": "08:00", "threshold": 10 }
 ]
 ```
 
 Notes:
-- `increase` alerts fire on a `0 -> >0` change or any increase. `below_threshold` alerts fire
-  once when availability **crosses** below the threshold (not repeatedly while it stays low),
-  and again if it recovers above and drops back below.
-- A transient fetch error for a route is skipped (last value kept), never mis-fired as a change.
-- On Railway you can override the file without a redeploy by setting the `ALERT_RULES` env var
-  to the same JSON array.
-- If `rules.json` is empty/absent, the monitor falls back to generating `increase` rules from
+- Alerts are **state-based, not transition-based**: while the condition is true they fire each
+  run (hourly), so you keep getting reminded until you act or the condition clears. (`increase`
+  is accepted as a backwards-compatible alias for `available`.)
+- A transient fetch error for a route is skipped that run; it's simply re-checked next run.
+- You can override the file without a redeploy by setting the `ALERT_RULES` env var (or a GitHub
+  Actions secret / repo variable) to the same JSON array.
+- If `rules.json` is empty/absent, the monitor falls back to generating `available` rules from
   `TARGET_DATES` × `TARGET_ROUTES`.
 
 ## Quick Start

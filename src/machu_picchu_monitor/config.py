@@ -113,8 +113,8 @@ class Settings(BaseSettings):
             return rules
         return [
             AlertRule(
-                name=f"increase:{route}:{visit_date}",
-                type="increase",
+                name=f"available:{route}:{visit_date}",
+                type="available",
                 visit_date=visit_date,
                 route=route,
             )

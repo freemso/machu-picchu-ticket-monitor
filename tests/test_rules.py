@@ -5,10 +5,10 @@ import pytest
 from machu_picchu_monitor.rules import RuleError, load_rules, parse_rules
 
 
-def test_parse_increase_and_threshold_rules() -> None:
+def test_parse_available_and_threshold_rules() -> None:
     rules = parse_rules(
         [
-            {"name": "agg", "type": "increase", "date": "2026-08-19", "route": "Circuit 2A"},
+            {"name": "agg", "type": "available", "date": "2026-08-19", "route": "Circuit 2A"},
             {
                 "name": "slot watch",
                 "type": "below_threshold",
@@ -19,13 +19,18 @@ def test_parse_increase_and_threshold_rules() -> None:
             },
         ]
     )
-    assert rules[0].type == "increase"
+    assert rules[0].type == "available"
     assert rules[0].route == "2A"  # normalized
     assert rules[0].visit_date == date(2026, 8, 19)
 
     assert rules[1].type == "below_threshold"
     assert rules[1].slot == "08:00:00"  # normalized to HH:MM:SS
     assert rules[1].threshold == 20
+
+
+def test_increase_is_accepted_as_alias_for_available() -> None:
+    rules = parse_rules([{"type": "increase", "date": "2026-08-19", "route": "2A"}])
+    assert rules[0].type == "available"
 
 
 def test_below_threshold_requires_threshold() -> None:

@@ -6,7 +6,7 @@ import random
 from typing import Any
 
 from .config import Settings
-from .models import AlertRule, AvailabilityRecord, MonitorStatus, ThresholdAlert, utcnow
+from .models import AlertRule, AvailabilityRecord, MonitorStatus, RuleAlert, utcnow
 from .notifications import NotificationManager
 from .observability import (
     AVAILABILITY_GAUGE,
@@ -69,9 +69,9 @@ class MonitorService:
                     route=record.route,
                 ).set(record.quantity)
 
-            alerts = 0
-            alerts += await self._run_increase_rules(active_rules, by_key)
-            alerts += await self._run_threshold_rules(active_rules, by_key)
+            # Persist every fetched route's total for the dashboard / history.
+            self.storage.record_availability(list(by_key.values()))
+            alerts = await self._evaluate_rules(active_rules, by_key)
 
             finished_at = utcnow()
             self.storage.record_monitor_run(
@@ -118,77 +118,56 @@ class MonitorService:
         finally:
             self.status.running = False
 
-    async def _run_increase_rules(
+    async def _evaluate_rules(
         self,
         rules: list[AlertRule],
         by_key: dict[tuple, AvailabilityRecord],
     ) -> int:
-        keys = {rule.key for rule in rules if rule.type == "increase"}
-        records = [by_key[key] for key in keys if key in by_key]
-        changes = self.storage.record_availability(
-            records,
-            alert_on_first_seen=self.settings.alert_on_first_seen,
-        )
-        alerts = 0
-        for change in changes:
-            sent_channels = await self.notifications.send(change)
-            for channel in sent_channels:
-                self.storage.record_notification(
-                    change, channel=channel, reason="availability_increase"
-                )
-            if sent_channels:
-                alerts += 1
-        return alerts
-
-    async def _run_threshold_rules(
-        self,
-        rules: list[AlertRule],
-        by_key: dict[tuple, AvailabilityRecord],
-    ) -> int:
+        """Alert on every run while a rule's condition currently holds:
+        `available` -> availability > 0; `below_threshold` -> availability < threshold."""
         alerts = 0
         for rule in rules:
-            if rule.type != "below_threshold" or rule.threshold is None:
-                continue
             record = by_key.get(rule.key)
             if record is None:
+                # Route wasn't fetched this run (rate-limited/skipped); try again next run.
                 logger.warning(
-                    "threshold_rule_no_data",
-                    extra={"rule": rule.name, "route": rule.route},
+                    "rule_no_data", extra={"rule": rule.name, "route": rule.route}
                 )
                 continue
 
             available, capacity = self._availability_for_rule(rule, record)
             if available is None:
                 logger.warning(
-                    "threshold_rule_slot_missing",
+                    "rule_slot_missing",
                     extra={"rule": rule.name, "route": rule.route, "slot": rule.slot},
                 )
                 continue
 
-            slot_key = rule.slot or "aggregate"
-            previous = self.storage.record_slot(
-                visit_date=rule.visit_date,
-                route=rule.route,
-                route_name=record.route_name,
-                slot=slot_key,
-                available=available,
-                capacity=capacity,
-            )
             if rule.slot:
+                self.storage.record_slot(
+                    visit_date=rule.visit_date,
+                    route=rule.route,
+                    route_name=record.route_name,
+                    slot=rule.slot,
+                    available=available,
+                    capacity=capacity,
+                )
                 SLOT_AVAILABILITY_GAUGE.labels(
                     visit_date=rule.visit_date.isoformat(),
                     route=rule.route,
                     slot=rule.slot,
                 ).set(available)
 
-            crossed_below = available < rule.threshold and (
-                previous is None or previous >= rule.threshold
-            )
-            if not crossed_below:
-                continue
+            if rule.type == "below_threshold":
+                if rule.threshold is None or available >= rule.threshold:
+                    continue
+            else:  # "available"
+                if available <= 0:
+                    continue
 
-            alert = ThresholdAlert(
+            alert = RuleAlert(
                 rule_name=rule.name,
+                rule_type=rule.type,
                 visit_date=rule.visit_date,
                 route=rule.route,
                 route_name=record.route_name,
@@ -196,26 +175,25 @@ class MonitorService:
                 available=available,
                 capacity=capacity,
                 threshold=rule.threshold,
-                previous=previous,
                 seen_at=utcnow(),
             )
-            sent_channels = await self.notifications.send_threshold(alert)
+            sent_channels = await self.notifications.send_alert(alert)
             for channel in sent_channels:
-                self.storage.record_threshold_notification(
-                    alert, channel=channel, reason="below_threshold"
+                self.storage.record_alert_notification(
+                    alert, channel=channel, reason=rule.type
                 )
             if sent_channels:
                 alerts += 1
-            THRESHOLD_ALERTS.labels(route=rule.route, slot=slot_key).inc()
+            THRESHOLD_ALERTS.labels(route=rule.route, slot=rule.slot or "total").inc()
             logger.info(
-                "threshold_alert",
+                "rule_alert",
                 extra={
                     "rule": rule.name,
+                    "type": rule.type,
                     "route": rule.route,
                     "slot": rule.slot,
                     "available": available,
                     "threshold": rule.threshold,
-                    "previous": previous,
                     "channels": sent_channels,
                 },
             )

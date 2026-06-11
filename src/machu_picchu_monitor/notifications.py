@@ -9,7 +9,7 @@ from typing import Protocol
 import httpx
 
 from .config import Settings
-from .models import AvailabilityChange, ThresholdAlert
+from .models import RuleAlert
 from .observability import NOTIFICATIONS_SENT
 
 logger = logging.getLogger(__name__)
@@ -25,40 +25,26 @@ class Notifier(Protocol):
         ...
 
 
-def subject_for_change(change: AvailabilityChange) -> str:
-    return f"Machu Picchu availability: {change.route} on {change.visit_date.isoformat()}"
+def subject_for_alert(alert: RuleAlert) -> str:
+    where = f"{alert.route} {alert.slot[:5]}" if alert.slot else alert.route
+    kind = "low stock" if alert.rule_type == "below_threshold" else "available"
+    return f"Machu Picchu {kind}: {where} on {alert.visit_date.isoformat()}"
 
 
-def format_message(change: AvailabilityChange) -> str:
-    old = "unknown" if change.old_quantity is None else str(change.old_quantity)
-    return (
-        "Machu Picchu ticket availability increased\n"
-        f"Date: {change.visit_date.isoformat()}\n"
-        f"Route: {change.route_name} ({change.route})\n"
-        f"Available: {change.new_quantity}\n"
-        f"Previous: {old}\n"
-        f"Seen at: {change.seen_at.isoformat()}"
-    )
-
-
-def subject_for_threshold(alert: ThresholdAlert) -> str:
-    where = f"{alert.route} {alert.slot}" if alert.slot else alert.route
-    return f"Machu Picchu low stock: {where} on {alert.visit_date.isoformat()}"
-
-
-def format_threshold_message(alert: ThresholdAlert) -> str:
+def format_alert_message(alert: RuleAlert) -> str:
     cap = "" if alert.capacity is None else f" / {alert.capacity}"
-    prev = "unknown" if alert.previous is None else str(alert.previous)
     slot_line = f"Slot: {alert.slot}\n" if alert.slot else ""
+    if alert.rule_type == "below_threshold":
+        headline = f"Machu Picchu availability is below {alert.threshold}"
+    else:
+        headline = "Machu Picchu tickets are available"
     return (
-        f"Machu Picchu availability dropped below {alert.threshold}\n"
+        f"{headline}\n"
         f"Date: {alert.visit_date.isoformat()}\n"
         f"Route: {alert.route_name} ({alert.route})\n"
         f"{slot_line}"
         f"Available: {alert.available}{cap}\n"
-        f"Previous: {prev}\n"
-        f"Threshold: {alert.threshold}\n"
-        f"Seen at: {alert.seen_at.isoformat()}"
+        f"Checked at: {alert.seen_at.isoformat()}"
     )
 
 
@@ -162,11 +148,8 @@ class NotificationManager:
             return configured
         return [notifier for notifier in configured if notifier.channel == preference]
 
-    async def send(self, change: AvailabilityChange) -> list[str]:
-        return await self._dispatch(subject_for_change(change), format_message(change))
-
-    async def send_threshold(self, alert: ThresholdAlert) -> list[str]:
-        return await self._dispatch(subject_for_threshold(alert), format_threshold_message(alert))
+    async def send_alert(self, alert: RuleAlert) -> list[str]:
+        return await self._dispatch(subject_for_alert(alert), format_alert_message(alert))
 
     async def _dispatch(self, subject: str, message: str) -> list[str]:
         sent_channels: list[str] = []

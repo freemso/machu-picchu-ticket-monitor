@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from machu_picchu_monitor.config import Settings
-from machu_picchu_monitor.models import AvailabilityChange, utcnow
+from machu_picchu_monitor.models import RuleAlert, utcnow
 from machu_picchu_monitor.notifications import NotificationManager
 
 
@@ -23,14 +23,17 @@ class FakeNotifier:
             raise RuntimeError(f"{self.channel} failed")
 
 
-def change() -> AvailabilityChange:
-    return AvailabilityChange(
+def alert() -> RuleAlert:
+    return RuleAlert(
+        rule_name="2A available",
+        rule_type="available",
         visit_date=date(2026, 8, 19),
         route="2A",
         route_name="Ruta 2-A",
-        old_quantity=0,
-        new_quantity=1,
-        source="test",
+        slot=None,
+        available=12,
+        capacity=None,
+        threshold=None,
         seen_at=utcnow(),
     )
 
@@ -43,7 +46,7 @@ async def test_backup_notifier_is_not_used_when_primary_succeeds() -> None:
     manager = NotificationManager(settings)
     manager.notifiers = [telegram, email]
 
-    assert await manager.send(change()) == ["telegram"]
+    assert await manager.send_alert(alert()) == ["telegram"]
     assert telegram.sent == 1
     assert email.sent == 0
 
@@ -56,6 +59,6 @@ async def test_backup_notifier_is_used_when_primary_fails() -> None:
     manager = NotificationManager(settings)
     manager.notifiers = [telegram, email]
 
-    assert await manager.send(change()) == ["email"]
+    assert await manager.send_alert(alert()) == ["email"]
     assert telegram.sent == 1
     assert email.sent == 1

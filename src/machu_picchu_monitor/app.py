@@ -56,11 +56,11 @@ def render_dashboard_fragment(storage: SQLiteStorage, monitor: MonitorService) -
     alert_desc: dict[tuple[str, str], list[str]] = {}
     for rule in rules:
         key = (rule.visit_date.isoformat(), rule.route)
-        if rule.type == "increase":
-            alert_desc.setdefault(key, []).append("on increase")
-        elif rule.type == "below_threshold":
+        if rule.type == "below_threshold":
             where = f" @ {rule.slot[:5]}" if rule.slot else " total"
             alert_desc.setdefault(key, []).append(f"< {rule.threshold}{where}")
+        else:  # "available"
+            alert_desc.setdefault(key, []).append("if available")
 
     date_sections: list[str] = []
     for visit_date in dates:

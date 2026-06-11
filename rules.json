@@ -1,10 +1,10 @@
 [
-  { "name": "2A available 08-19", "type": "increase", "date": "2026-08-19", "route": "2A" },
-  { "name": "2B available 08-19", "type": "increase", "date": "2026-08-19", "route": "2B" },
-  { "name": "3A available 08-19", "type": "increase", "date": "2026-08-19", "route": "3A" },
-  { "name": "2A available 08-20", "type": "increase", "date": "2026-08-20", "route": "2A" },
-  { "name": "2B available 08-20", "type": "increase", "date": "2026-08-20", "route": "2B" },
-  { "name": "3A available 08-20", "type": "increase", "date": "2026-08-20", "route": "3A" },
+  { "name": "2A available 08-19", "type": "available", "date": "2026-08-19", "route": "2A" },
+  { "name": "2B available 08-19", "type": "available", "date": "2026-08-19", "route": "2B" },
+  { "name": "3A available 08-19", "type": "available", "date": "2026-08-19", "route": "3A" },
+  { "name": "2A available 08-20", "type": "available", "date": "2026-08-20", "route": "2A" },
+  { "name": "2B available 08-20", "type": "available", "date": "2026-08-20", "route": "2B" },
+  { "name": "3A available 08-20", "type": "available", "date": "2026-08-20", "route": "3A" },
 
-  { "name": "1C 08:00 low stock", "type": "below_threshold", "date": "2026-08-19", "route": "1C", "slot": "08:00", "threshold": 20 }
+  { "name": "1C 08:00 low stock", "type": "below_threshold", "date": "2026-08-19", "route": "1C", "slot": "08:00", "threshold": 10 }
 ]

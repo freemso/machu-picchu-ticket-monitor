@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import AvailabilityChange, AvailabilityRecord, ThresholdAlert, utcnow
+from .models import AvailabilityChange, AvailabilityRecord, RuleAlert, utcnow
 
 
 def _dt(value: datetime) -> str:
@@ -197,25 +197,9 @@ class SQLiteStorage:
                 (visit_date, route, route_name, availability, channel, reason, _dt(utcnow())),
             )
 
-    def record_notification(
+    def record_alert_notification(
         self,
-        change: AvailabilityChange,
-        *,
-        channel: str,
-        reason: str,
-    ) -> None:
-        self._insert_notification(
-            visit_date=change.visit_date.isoformat(),
-            route=change.route,
-            route_name=change.route_name,
-            availability=change.new_quantity,
-            channel=channel,
-            reason=reason,
-        )
-
-    def record_threshold_notification(
-        self,
-        alert: ThresholdAlert,
+        alert: RuleAlert,
         *,
         channel: str,
         reason: str,

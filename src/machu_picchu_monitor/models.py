@@ -51,11 +51,14 @@ class AvailabilityChange:
 class AlertRule:
     """A declarative monitoring rule. Add one to rules.json to monitor more.
 
-    type="increase"        -> alert when a route becomes available (0 -> >0) or its
-                              count increases. Operates on the per-route aggregate.
-    type="below_threshold" -> alert when availability drops below `threshold`. If `slot`
-                              is set (e.g. "08:00:00"), it watches that time slot; otherwise
-                              it watches the per-route aggregate.
+    Both types alert on EVERY run while the condition currently holds (a recurring
+    reminder), not just on a transition.
+
+    type="available"       -> alert while availability is greater than 0.
+    type="below_threshold" -> alert while availability is below `threshold`.
+
+    If `slot` is set (e.g. "08:00:00") the rule watches that time slot; otherwise it
+    watches the per-route total.
     """
 
     name: str
@@ -71,16 +74,16 @@ class AlertRule:
 
 
 @dataclass(frozen=True)
-class ThresholdAlert:
+class RuleAlert:
     rule_name: str
+    rule_type: str
     visit_date: date
     route: str
     route_name: str
     slot: str | None
     available: int
     capacity: int | None
-    threshold: int
-    previous: int | None
+    threshold: int | None
     seen_at: datetime
 
 

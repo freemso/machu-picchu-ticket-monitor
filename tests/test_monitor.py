@@ -64,57 +64,45 @@ class SlotProvider:
 
 class FakeNotifications:
     def __init__(self):
-        self.sent = []
-        self.threshold_sent = []
+        self.alerts = []
 
-    async def send(self, change):
-        self.sent.append(change)
-        return ["fake"]
-
-    async def send_threshold(self, alert):
-        self.threshold_sent.append(alert)
+    async def send_alert(self, alert):
+        self.alerts.append(alert)
         return ["fake"]
 
 
 @pytest.mark.asyncio
-async def test_monitor_notifies_only_after_stored_increase(tmp_path) -> None:
-    settings = Settings(
-        target_dates="2026-08-24",
-        target_routes="2A",
-        preferred_notification="fake",
-        sqlite_path=tmp_path / "availability.sqlite3",
-    )
+async def test_available_rule_alerts_whenever_above_zero(tmp_path) -> None:
+    settings = Settings(preferred_notification="fake", sqlite_path=tmp_path / "a.sqlite3")
     storage = SQLiteStorage(settings.sqlite_path)
     storage.init()
     notifications = FakeNotifications()
     rules = [
-        AlertRule(
-            name="2A increase",
-            type="increase",
-            visit_date=date(2026, 8, 24),
-            route="2A",
-        )
+        AlertRule(name="2A", type="available", visit_date=date(2026, 8, 24), route="2A")
     ]
+    # 0 (none -> no alert), 3 (available -> alert), 5 (still available -> alert again)
     monitor = MonitorService(
         settings,
         storage,
-        provider=FakeProvider([0, 3]),
+        provider=FakeProvider([0, 3, 5]),
         notifications=notifications,
         rules=rules,
     )
 
     assert await monitor.run_once() == 0
-    assert notifications.sent == []
+    assert notifications.alerts == []
 
     assert await monitor.run_once() == 1
-    assert len(notifications.sent) == 1
-    assert notifications.sent[0].new_quantity == 3
+    assert notifications.alerts[-1].available == 3
     assert storage.list_current()[0]["availability"] == 3
+
+    assert await monitor.run_once() == 1  # still available -> alerts every run
+    assert len(notifications.alerts) == 2
     storage.close()
 
 
 @pytest.mark.asyncio
-async def test_below_threshold_alerts_once_on_crossing(tmp_path) -> None:
+async def test_below_threshold_alerts_every_run_while_below(tmp_path) -> None:
     settings = Settings(preferred_notification="fake", sqlite_path=tmp_path / "a.sqlite3")
     storage = SQLiteStorage(settings.sqlite_path)
     storage.init()
@@ -129,7 +117,7 @@ async def test_below_threshold_alerts_once_on_crossing(tmp_path) -> None:
             threshold=20,
         )
     ]
-    # 16 (below 20 -> alert), 16 (still low -> no repeat), 25 (recovered), 9 (re-cross -> alert)
+    # 16 (<20 -> alert), 16 (<20 -> alert again), 25 (>=20 -> no alert), 9 (<20 -> alert)
     monitor = MonitorService(
         settings,
         storage,
@@ -139,15 +127,14 @@ async def test_below_threshold_alerts_once_on_crossing(tmp_path) -> None:
     )
 
     assert await monitor.run_once() == 1
-    assert len(notifications.threshold_sent) == 1
-    assert notifications.threshold_sent[0].available == 16
-    assert notifications.threshold_sent[0].capacity == 30
+    assert notifications.alerts[0].available == 16
+    assert notifications.alerts[0].capacity == 30
 
-    assert await monitor.run_once() == 0  # still below, no repeat
-    assert len(notifications.threshold_sent) == 1
+    assert await monitor.run_once() == 1  # still below -> alerts again
+    assert len(notifications.alerts) == 2
 
-    assert await monitor.run_once() == 0  # recovered above threshold
-    assert await monitor.run_once() == 1  # crossed below again
-    assert len(notifications.threshold_sent) == 2
-    assert notifications.threshold_sent[1].available == 9
+    assert await monitor.run_once() == 0  # >= threshold -> no alert
+    assert await monitor.run_once() == 1  # below again
+    assert len(notifications.alerts) == 3
+    assert notifications.alerts[-1].available == 9
     storage.close()
