@@ -347,6 +347,11 @@ class OfficialApiProvider:
                     )
                     continue
 
+                # Space out requests so the per-run burst doesn't trip the WAF's
+                # per-IP rate limit (which otherwise 403s the later calls).
+                if attempted and self.settings.inter_request_delay_seconds:
+                    await asyncio.sleep(self.settings.inter_request_delay_seconds)
+
                 attempted += 1
                 try:
                     records.append(await self._fetch_online_route(visit_date, route_meta))

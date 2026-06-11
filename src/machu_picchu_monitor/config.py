@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     retry_base_seconds: float = Field(default=2.0, ge=0.1)
     retry_max_seconds: float = Field(default=300.0, ge=1.0)
     request_timeout_seconds: float = Field(default=30.0, ge=1.0)
+    # Pause between per-route requests within a run to stay under the WAF's per-IP
+    # burst limit. ~7 routes x 2s adds only a few seconds to an hourly run.
+    inter_request_delay_seconds: float = Field(default=2.0, ge=0.0)
 
     sqlite_path: Path = Path("data/availability.sqlite3")
     log_level: str = "INFO"
