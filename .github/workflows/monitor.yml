@@ -1,0 +1,54 @@
+name: Monitor
+
+# Runs the availability check hourly from GitHub-hosted runners. Each run gets a
+# fresh runner IP, so a single rate-limited IP can't stick (unlike a fixed host).
+# SQLite state (availability history, slot levels, and the cached route catalog)
+# is carried between runs via the Actions cache so alerts stay de-duplicated.
+
+on:
+  schedule:
+    - cron: "0 * * * *" # hourly, on the hour (UTC)
+  workflow_dispatch: {} # allow manual runs from the Actions tab / `gh workflow run`
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install .
+
+      - name: Restore monitor state
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          # Unique key per run + a shared prefix: each run saves a new cache and
+          # restores the most recent previous one (the standard mutable-state pattern).
+          key: monitor-state-${{ github.run_id }}
+          restore-keys: |
+            monitor-state-
+
+      - name: Run availability check
+        env:
+          PROVIDER_MODE: auto
+          PREFERRED_NOTIFICATION: telegram
+          SQLITE_PATH: data/availability.sqlite3
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: mp-monitor check
+
+      - name: Save monitor state
+        if: always() # persist state (incl. seeded route-catalog cache) even if a check fails
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: monitor-state-${{ github.run_id }}

@@ -4,5 +4,8 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "mp-monitor check"
-cronSchedule = "0 * * * *"
+# PAUSED: monitoring moved to GitHub Actions (.github/workflows/monitor.yml) to get a
+# fresh egress IP. This yearly schedule effectively disables the Railway cron. To
+# re-enable Railway instead, restore a real schedule like "*/15 * * * *".
+cronSchedule = "0 0 1 1 *"
 restartPolicyType = "NEVER"
