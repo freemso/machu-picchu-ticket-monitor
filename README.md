@@ -182,9 +182,20 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "mp-monitor check"
-cronSchedule = "*/30 * * * *"
+cronSchedule = "0 * * * *"   # hourly
 restartPolicyType = "NEVER"
 ```
+
+> **Important — enable IPv6 egress.** The official API's WAF rate-limits by source IP and
+> will 403-ban an address that bursts too many requests. Railway's shared **IPv4** egress can
+> get stuck in a long ban. Turn on **IPv6 outbound** for the service (Settings → Networking)
+> so requests egress from an un-banned IPv6 address. This is a Railway dashboard toggle and is
+> **not** captured in `railway.toml`, so re-enable it if you recreate the service.
+>
+> To stay under the WAF's per-IP burst limit, each run **drips** its requests ~3 minutes apart
+> (`INTER_REQUEST_DELAY_SECONDS=180`, the default). A run is therefore long (~18 min for 7
+> routes) but mostly idle — cheap on Railway's usage-based billing. Avoid bursty manual
+> redeploys/restarts, which is what triggers the ban in the first place.
 
 Create one Railway service from this repository, then add these service variables:
 
@@ -207,10 +218,14 @@ Attach a Railway volume to the service with mount path:
 /app/data
 ```
 
-The volume keeps SQLite state between runs so alerts only send when availability appears or
-increases. `RAILWAY_RUN_UID=0` lets the process write to the root-owned Railway volume. For the
-first cloud deploy, run the cron service manually once from Railway and check the logs for six
-target checks across `2026-08-19` and `2026-08-20`.
+The volume keeps SQLite state between runs (availability history, slot levels, and the cached
+route catalog), so a brief upstream rate-limit can't lose data. `RAILWAY_RUN_UID=0` lets the
+process write to the root-owned Railway volume. For the first cloud deploy, run the cron service
+manually once and check the logs for `monitor_run_success`.
+
+The repo also ships a manual GitHub Actions fallback (`.github/workflows/monitor.yml`,
+`workflow_dispatch` only). GitHub-hosted runners use a fresh IP per run, so it's a handy way to
+get data through if Railway's IP is ever stuck in a ban.
 
 ## GitHub Actions
 
