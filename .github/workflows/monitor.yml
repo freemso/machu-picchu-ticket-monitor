@@ -1,14 +1,16 @@
 name: Monitor
 
-# Runs the availability check hourly from GitHub-hosted runners. Each run gets a
-# fresh runner IP, so a single rate-limited IP can't stick (unlike a fixed host).
-# SQLite state (availability history, slot levels, and the cached route catalog)
-# is carried between runs via the Actions cache so alerts stay de-duplicated.
+# Hourly availability check on GitHub-hosted runners. The official API's WAF rate-limits
+# per source IP and 403s a burst of requests, but GitHub gives each job a fresh runner IP.
+# So we fan out: one job per rule (read from rules.json), each making just a couple of calls
+# from its own IP. That gives full coverage every run without tripping the limit. Alerts are
+# state-based ("alert while the condition holds"), so each job is stateless — no shared cache.
+#
+# Requires a PUBLIC repo for free Actions minutes (the fan-out multiplies billable jobs).
 
 on:
-  # Scheduled runs are DISABLED — monitoring runs on Railway (drip-paced from its fixed
-  # IP, cheaper here than GitHub's per-minute billing). Kept as a manual fallback that
-  # can be triggered from the Actions tab / `gh workflow run` to use a fresh runner IP.
+  schedule:
+    - cron: "0 * * * *" # hourly
   workflow_dispatch: {}
 
 concurrency:
@@ -16,40 +18,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  check:
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+      - id: gen
+        # One matrix entry per rule; each carries that single rule as a JSON-array string
+        # (passed to the check job via the ALERT_RULES env var).
+        run: |
+          matrix=$(jq -c '{include: [ .[] | {name: (.name // .route), rules: ([.] | tojson)} ]}' rules.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+  check:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    name: check (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install package
         run: pip install .
-
-      - name: Restore monitor state
-        uses: actions/cache/restore@v4
-        with:
-          path: data
-          # Unique key per run + a shared prefix: each run saves a new cache and
-          # restores the most recent previous one (the standard mutable-state pattern).
-          key: monitor-state-${{ github.run_id }}
-          restore-keys: |
-            monitor-state-
-
-      - name: Run availability check
+      - name: Check this rule
         env:
+          ALERT_RULES: ${{ matrix.rules }} # just this one rule
           PROVIDER_MODE: auto
           PREFERRED_NOTIFICATION: telegram
+          INTER_REQUEST_DELAY_SECONDS: "0" # one route per job — no intra-run burst to pace
           SQLITE_PATH: data/availability.sqlite3
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: mp-monitor check
-
-      - name: Save monitor state
-        if: always() # persist state (incl. seeded route-catalog cache) even if a check fails
-        uses: actions/cache/save@v4
-        with:
-          path: data
-          key: monitor-state-${{ github.run_id }}

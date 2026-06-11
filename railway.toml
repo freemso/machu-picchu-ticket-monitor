@@ -4,8 +4,9 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "mp-monitor check"
-# Hourly. Each run drips its requests ~3 min apart (INTER_REQUEST_DELAY_SECONDS) to
-# stay under the WAF's per-IP burst limit on Railway's fixed egress IP. The run is
-# long but mostly idle, which is cheap on Railway's usage-based billing.
-cronSchedule = "0 * * * *"
+# DISABLED: Railway's egress IP got durably WAF-banned, so monitoring moved to GitHub
+# Actions (.github/workflows/monitor.yml), which fans out across fresh runner IPs. This
+# yearly schedule effectively pauses the Railway cron; you can also delete the Railway
+# service to stop it entirely. To re-enable, restore a real schedule like "0 * * * *".
+cronSchedule = "0 0 1 1 *"
 restartPolicyType = "NEVER"
