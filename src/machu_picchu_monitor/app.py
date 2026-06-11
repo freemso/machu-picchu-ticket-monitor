@@ -347,54 +347,47 @@ def render_page(monitor: MonitorService, fragment: str) -> str:
         </header>
         <main id="dashboard">{fragment}</main>
         <script>
-          let checking = false;
           async function refreshDashboard() {{
-            if (checking) return;  // don't clobber the in-progress status line
             const response = await fetch('/partials/dashboard', {{ cache: 'no-store' }});
             if (response.ok) {{
               document.getElementById('dashboard').innerHTML = await response.text();
             }}
           }}
           // Delegated so it keeps working after the fragment is re-rendered.
+          // A check runs in the background (requests are dripped minutes apart), so we
+          // start it and let the status panel + auto-refresh show progress, rather than
+          // blocking on the long request.
           document.addEventListener('submit', async (event) => {{
             if (event.target.id !== 'run-check-form') return;
             event.preventDefault();
             const btn = document.getElementById('run-check-btn');
             const status = document.getElementById('run-check-status');
-            checking = true;
             btn.disabled = true;
             status.className = 'check-status';
-            status.innerHTML = '<span class="spinner"></span>Checking the official site…';
+            status.innerHTML = '<span class="spinner"></span>Starting check…';
             try {{
               const res = await fetch('/api/run-once', {{
                 method: 'POST',
                 headers: {{ 'Accept': 'application/json' }},
               }});
               const data = await res.json().catch(() => ({{}}));
-              if (res.ok && data.ok) {{
-                status.className = 'check-status ok';
-                const n = data.alerts ? ' · ' + data.alerts + ' alert(s)' : '';
-                status.textContent = '✓ Updated' + n;
-                checking = false;
-                await refreshDashboard();
-                setTimeout(() => {{
-                  status.textContent = '';
-                  status.className = 'check-status';
-                }}, 4000);
-              }} else {{
-                status.className = 'check-status err';
-                status.textContent = '✗ ' + (data.error || ('HTTP ' + res.status));
-                checking = false;
-              }}
+              status.className = 'check-status';
+              status.textContent = data.started
+                ? '⏳ Check running — requests drip over several minutes; page updates itself.'
+                : 'ℹ︎ ' + (data.message || 'A check is already running');
             }} catch (err) {{
               status.className = 'check-status err';
               status.textContent = '✗ ' + err;
-              checking = false;
             }} finally {{
               btn.disabled = false;
             }}
+            await refreshDashboard();
+            setTimeout(() => {{
+              status.textContent = '';
+              status.className = 'check-status';
+            }}, 9000);
           }});
-          setInterval(refreshDashboard, 60000);
+          setInterval(refreshDashboard, 20000);
         </script>
       </body>
     </html>
@@ -480,24 +473,29 @@ def create_app() -> FastAPI:
 
     @app.post("/api/run-once")
     async def run_once(request: Request) -> Response:
+        # A run drips its requests minutes apart, so it can take many minutes.
+        # Kick it off in the background and return immediately instead of blocking
+        # the request (which would time out). The dashboard reflects progress via
+        # the status panel (Running/Idle) and auto-refresh.
         monitor: MonitorService = request.app.state.monitor
-        try:
-            alerts = await monitor.run_once()
-            ok, error = True, None
-        except Exception as exc:
-            # run_once already logged and recorded the failure; surface it gracefully
-            ok, alerts, error = False, 0, str(exc)
+        started = not monitor.status.running
+        if started:
+            asyncio.create_task(_background_run(monitor))
 
-        # The dashboard button is a plain HTML form: redirect back so the page
-        # re-renders (errors appear in the "Last Error" panel) instead of a 5xx.
         if "text/html" in request.headers.get("accept", ""):
             return RedirectResponse(url="/", status_code=303)
-        payload = {"ok": ok, "alerts": alerts}
-        if error:
-            payload["error"] = error
-        return JSONResponse(payload, status_code=200 if ok else 502)
+        message = "Check started" if started else "A check is already running"
+        return JSONResponse({"ok": True, "started": started, "message": message})
 
     return app
+
+
+async def _background_run(monitor: MonitorService) -> None:
+    try:
+        await monitor.run_once()
+    except Exception:
+        # run_once already records the failure (visible in the Last Error panel).
+        logger.warning("manual_run_once_failed", exc_info=True)
 
 
 app = create_app()
