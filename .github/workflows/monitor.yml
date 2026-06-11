@@ -10,7 +10,9 @@ name: Monitor
 
 on:
   schedule:
-    - cron: "0 * * * *" # hourly
+    # Hourly at :17 — deliberately off the top of the hour. GitHub delays/drops scheduled
+    # runs during the :00 stampede, so an odd minute fires far more reliably.
+    - cron: "17 * * * *"
   workflow_dispatch: {}
 
 concurrency:
