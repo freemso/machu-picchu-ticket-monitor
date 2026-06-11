@@ -29,10 +29,12 @@ class Settings(BaseSettings):
     retry_base_seconds: float = Field(default=2.0, ge=0.1)
     retry_max_seconds: float = Field(default=300.0, ge=1.0)
     request_timeout_seconds: float = Field(default=30.0, ge=1.0)
-    # Pause between per-route requests within a run to stay under the WAF's per-IP
-    # burst limit (it 403s after ~4-5 quick calls). ~7 routes x 12s ≈ 80s per run,
-    # which is fine on an hourly schedule.
-    inter_request_delay_seconds: float = Field(default=12.0, ge=0.0)
+    # Pause between per-route requests so a run drips slowly (~1 request / 3 min) and
+    # stays well under the WAF's per-IP burst limit. This makes runs long (~18 min for
+    # 7 routes) but mostly idle — cheap on Railway, which bills resource usage rather
+    # than wall-clock minutes. Override with INTER_REQUEST_DELAY_SECONDS for snappier
+    # local runs.
+    inter_request_delay_seconds: float = Field(default=180.0, ge=0.0)
 
     sqlite_path: Path = Path("data/availability.sqlite3")
     log_level: str = "INFO"

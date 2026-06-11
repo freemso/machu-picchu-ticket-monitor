@@ -6,9 +6,10 @@ name: Monitor
 # is carried between runs via the Actions cache so alerts stay de-duplicated.
 
 on:
-  schedule:
-    - cron: "0 * * * *" # hourly, on the hour (UTC)
-  workflow_dispatch: {} # allow manual runs from the Actions tab / `gh workflow run`
+  # Scheduled runs are DISABLED — monitoring runs on Railway (drip-paced from its fixed
+  # IP, cheaper here than GitHub's per-minute billing). Kept as a manual fallback that
+  # can be triggered from the Actions tab / `gh workflow run` to use a fresh runner IP.
+  workflow_dispatch: {}
 
 concurrency:
   group: monitor
