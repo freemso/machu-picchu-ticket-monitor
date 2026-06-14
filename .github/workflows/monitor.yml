@@ -36,6 +36,10 @@ jobs:
   check:
     needs: plan
     runs-on: ubuntu-latest
+    # A single route whose runner IP gets a transient 403 shouldn't mark the whole run
+    # red — the other routes still checked, and state-based alerts cover the missed route
+    # next run. The failed route is still visible as a failed job in the run's job list.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
