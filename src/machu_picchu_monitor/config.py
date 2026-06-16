@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Route catalog (IDs) changes rarely; cache it on disk next to the SQLite file.
     route_catalog_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=60)
 
+    # If set, the monitor reads availability from this published JSON snapshot URL
+    # instead of the official API. Lets the local dashboard show data collected by the
+    # GitHub Actions runners (which have un-banned IPs) without hitting the API itself.
+    snapshot_url: str = ""
+
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 

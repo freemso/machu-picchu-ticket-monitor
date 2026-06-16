@@ -543,6 +543,50 @@ class PlaywrightProvider:
         return records
 
 
+class SnapshotProvider:
+    """Reads availability from a published JSON snapshot (produced by the GitHub Actions
+    runners) instead of the official API. Used by the local dashboard, whose own IP is
+    WAF-banned — it can still reach the snapshot URL (raw.githubusercontent.com)."""
+
+    name = "snapshot"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    async def fetch_availability(
+        self,
+        visit_dates: Sequence[date],
+        routes: Sequence[str],
+    ) -> list[AvailabilityRecord]:
+        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+            response = await client.get(self.settings.snapshot_url)
+            response.raise_for_status()
+            data = response.json()
+
+        wanted_dates = {item.isoformat() for item in visit_dates}
+        wanted_routes = {normalize_route_code(route) for route in routes}
+        checked_at = utcnow()
+        records: list[AvailabilityRecord] = []
+        for row in data.get("routes", []):
+            if row.get("visit_date") not in wanted_dates:
+                continue
+            code = normalize_route_code(str(row.get("route", "")))
+            if code not in wanted_routes:
+                continue
+            records.append(
+                AvailabilityRecord(
+                    visit_date=date.fromisoformat(row["visit_date"]),
+                    route=code,
+                    route_name=str(row.get("route_name") or code),
+                    quantity=int(row.get("availability") or 0),
+                    source="snapshot",
+                    checked_at=checked_at,
+                    raw=row,
+                )
+            )
+        return records
+
+
 class AutoProvider:
     name = "auto"
 

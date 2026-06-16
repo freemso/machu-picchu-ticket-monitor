@@ -15,7 +15,7 @@ from .observability import (
     SLOT_AVAILABILITY_GAUGE,
     THRESHOLD_ALERTS,
 )
-from .providers import AutoProvider, AvailabilityProvider
+from .providers import AutoProvider, AvailabilityProvider, SnapshotProvider
 from .storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,12 @@ class MonitorService:
     ):
         self.settings = settings
         self.storage = storage
-        self.provider = provider or AutoProvider(settings)
+        if provider is not None:
+            self.provider = provider
+        elif settings.snapshot_url:
+            self.provider = SnapshotProvider(settings)
+        else:
+            self.provider = AutoProvider(settings)
         self.notifications = notifications or NotificationManager(settings)
         self.rules = rules if rules is not None else settings.load_alert_rules()
         self.status = MonitorStatus()

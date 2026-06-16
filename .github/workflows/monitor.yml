@@ -58,6 +58,50 @@ jobs:
           PREFERRED_NOTIFICATION: telegram
           INTER_REQUEST_DELAY_SECONDS: "0" # one route per job — no intra-run burst to pace
           SQLITE_PATH: data/availability.sqlite3
+          SNAPSHOT_OUT: snapshot.json # this route's result, for the dashboard snapshot
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: mp-monitor check
+      - name: Upload this route's snapshot
+        if: always() # publish whatever was fetched, even if another route 403'd
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ strategy.job-index }}
+          path: snapshot.json
+          if-no-files-found: ignore
+
+  publish:
+    needs: check
+    if: always() # publish whatever routes succeeded, even if some failed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the merged snapshot to the data branch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: snapshot-*
+      - name: Merge route snapshots
+        run: |
+          shopt -s nullglob
+          files=(artifacts/*/snapshot.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo '{"generated_at":"","routes":[],"slots":[]}' > availability.json
+          else
+            jq -s '{
+              generated_at: (now | todate),
+              routes: (map(.routes) | add // []),
+              slots:  (map(.slots)  | add // [])
+            }' "${files[@]}" > availability.json
+          fi
+          cat availability.json
+      - name: Publish to data branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan data
+          git reset
+          git add -f availability.json
+          git commit -m "snapshot $(date -u +%FT%TZ)"
+          git push -f origin data

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import os
 from datetime import date
+from pathlib import Path
 
 import uvicorn
 
@@ -15,15 +18,28 @@ from .observability import setup_logging
 from .storage import SQLiteStorage
 
 
+def _write_snapshot(path: str, storage: SQLiteStorage) -> None:
+    """Dump what this run fetched, so a CI job can publish it for the dashboard."""
+    payload = {
+        "generated_at": utcnow().isoformat(),
+        "routes": storage.list_current(),
+        "slots": storage.list_slot_current(),
+    }
+    Path(path).write_text(json.dumps(payload), encoding="utf-8")
+
+
 async def _run_check() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
     storage = SQLiteStorage(settings.sqlite_path)
     storage.init()
     monitor = MonitorService(settings, storage)
+    snapshot_out = os.environ.get("SNAPSHOT_OUT")
     try:
         await monitor.run_once()
     finally:
+        if snapshot_out:
+            _write_snapshot(snapshot_out, storage)
         await monitor.stop()
         storage.close()
 
