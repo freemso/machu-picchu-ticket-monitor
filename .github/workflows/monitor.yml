@@ -96,12 +96,14 @@ jobs:
             }' "${files[@]}" > availability.json
           fi
           cat availability.json
-      - name: Publish to data branch
+      - name: Publish to data branch (served by GitHub Pages)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp web/index.html index.html   # static dashboard, fetches ./availability.json
+          touch .nojekyll                 # serve files as-is (no Jekyll build)
           git checkout --orphan data
           git reset
-          git add -f availability.json
+          git add -f availability.json index.html .nojekyll
           git commit -m "snapshot $(date -u +%FT%TZ)"
           git push -f origin data
