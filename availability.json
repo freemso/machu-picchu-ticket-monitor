@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-07-02T01:27:02Z",
+  "routes": [
+    {
+      "visit_date": "2026-08-20",
+      "route": "2A",
+      "route_name": "Ruta 2-A: Clásico Diseñada",
+      "availability": 0,
+      "source": "official_online_api",
+      "last_seen_at": "2026-07-02T01:26:47.025993+00:00"
+    },
+    {
+      "visit_date": "2026-08-20",
+      "route": "2B",
+      "route_name": "Ruta 2-B: Terraza Inferior",
+      "availability": 0,
+      "source": "official_online_api",
+      "last_seen_at": "2026-07-02T01:26:47.764945+00:00"
+    },
+    {
+      "visit_date": "2026-08-20",
+      "route": "3A",
+      "route_name": "Ruta 3-A: Montaña Waynapicchu",
+      "availability": 0,
+      "source": "official_online_api",
+      "last_seen_at": "2026-07-02T01:26:47.956066+00:00"
+    },
+    {
+      "visit_date": "2026-08-20",
+      "route": "3B",
+      "route_name": "Ruta 3-B: Realeza diseñada",
+      "availability": 0,
+      "source": "official_online_api",
+      "last_seen_at": "2026-07-02T01:26:53.746592+00:00"
+    },
+    {
+      "visit_date": "2026-08-20",
+      "route": "3C",
+      "route_name": "Ruta 3-C: Gran Caverna",
+      "availability": 0,
+      "source": "official_online_api",
+      "last_seen_at": "2026-07-02T01:26:47.677620+00:00"
+    },
+    {
+      "visit_date": "2026-08-20",
+      "route": "3D",
+      "route_name": "Ruta 3-D: Huchuypicchu",
+      "availability": 0,
+      "source": "official_online_api",
+      "last_seen_at": "2026-07-02T01:26:49.271013+00:00"
+    }
+  ],
+  "slots": []
+}
